@@ -1,0 +1,1813 @@
+---
+title: "State & Metropolitan Statistical Area Business Cycles"
+author: ""
+date: ""
+output: html_document
+runtime: shiny
+---
+
+<style type="text/css">
+
+h1.title {
+  font-size: 38px;
+  color: Black;
+  text-align: center;
+}
+h4.author { /* Header 4 - and the author and data headers use this too  */
+    font-size: 18px;
+  font-family: "Times New Roman", Times, serif;
+  color: Black;
+  text-align: center;
+}
+h4.date { /* Header 4 - and the author and data headers use this too  */
+  font-size: 18px;
+  font-family: "Times New Roman", Times, serif;
+  color: DarkBlue;
+  text-align: center;
+}
+</style>
+
+<center>
+![](Econcenter.png)
+<br>
+Iain Kirsch
+<br>
+`r Sys.Date()`
+</center>
+
+
+<br>
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(Hmisc)
+library(tidyverse)
+library(zoo)
+library(shiny)
+library(shinydashboard)
+library(rsconnect)
+library(kableExtra)
+library(leaflet)
+library(sf)
+library(xgboost)
+library(Matrix)
+library(caret)
+library(plotly)
+library(scales)
+
+
+# State Data
+load("state.peak.table.RData")
+load("state.recession.coincident.RData")
+load("state.cluster.RData")
+load("stategeog.RData")
+load("ohio_manu.RData")
+
+statetables<- statetables %>% 
+  mutate(State= as.character(State))
+
+statetables<- as.data.frame(statetables[c(5,1:3)]) %>% 
+  arrange(State, Peaks)
+
+statetableohio <- statetables %>% 
+  filter(State=="Ohio")
+
+masterstate2<- masterstate %>% 
+  filter(!is.na(Recession))
+
+clusters<- statetables %>% 
+  select(State, Months) %>% 
+  group_by(State) %>% 
+  summarise(Months=sum(Months)) %>% 
+  left_join(clusters, by="State") %>% 
+  select(State, Cluster, Herfindahl_Index, Months) %>% 
+  mutate(Cluster=as.numeric(as.character(Cluster))) %>% 
+  filter(State!="United States")
+
+# MSA Data
+load("msa.peak.table.RData")
+msarecessiontotal<- msarecessiontotal %>% 
+  mutate(State=as.character(State))
+msarecessiontotal<- msarecessiontotal[c(3,4,1,2,5)]
+load("msa.recession.coincident.RData")
+mastermsa<- mastermsa %>% 
+  filter(!is.na(Recession))
+
+load("msaclusters.RData")
+
+msacluster<- msacluster %>% 
+    mutate(Latitude= as.numeric(as.character(Latitude))) %>% 
+    mutate(Longitude= as.numeric(as.character(Longitude)))
+
+# Cluster Data, for states
+load("ch_index_results.RData")
+load("wss_results.RData") 
+load("state.cluster.centroids.RData")
+
+# Misc. Data
+load("naicsdata.RData")
+load("brentcrude.RData")
+bcrude<- bcrude %>% 
+  filter(!is.na(Brent_Crude))
+
+# Color Palette Setup
+risk.bins<- c(0.14, 0.17, 0.20, 0.23, 0.26, 0.29, 0.32)
+startdate3<- as.yearmon("Feb 1990", format="%b %Y")
+
+color_pal <- colorNumeric(c("white", "firebrick"), 0:1)
+color_pal2 <- colorNumeric(c("deepskyblue", "orange", "dimgrey", "forestgreen"), 1:4, domain = clusters$Cluster)
+color_pal3 <- colorBin(palette = "RdBu",
+                       domain=clusters$Months, bins = 6, pretty = TRUE,
+                       na.color = "#808080", alpha = FALSE, reverse = TRUE,
+                       right = FALSE)
+color_pal4 <- colorBin(palette = "RdBu",
+                       domain=clusters$Herfindahl_Index, bins = risk.bins, pretty = TRUE,
+                       na.color = "#808080", alpha = FALSE, reverse = TRUE,
+                       right = FALSE)
+color_pal5 <- colorNumeric(c("deepskyblue", "orange", "dimgrey", "darkseagreen", "firebrick"), 1:5, domain = msacluster$Cluster)
+
+monthtable <- msarecessiontotal %>% 
+  select(MSA, Months) %>%
+  group_by(MSA) %>% 
+  summarise(Months=sum(Months)) %>% 
+  arrange(Months)
+Rank<- 1:67
+monthtable<- as.data.frame(cbind(monthtable, Rank))
+
+monthtablestate <- statetables %>% 
+  filter(State!="United States") %>% 
+  select(State, Months) %>%
+  group_by(State) %>% 
+  summarise(Months=sum(Months)) %>% 
+  arrange(Months)
+Rank<- 1:50
+monthtablestate <- as.data.frame(cbind(monthtablestate, Rank))
+
+
+# Functions
+stategraph<- function(x){
+
+  masterstate3 <- masterstate2 %>% 
+    filter(State==x)
+  
+  statetables2 <- statetables %>% 
+    filter(State==x)
+  
+  graphics::plot(x=masterstate3$Date, y=masterstate3$Coincident, ylab="Coincident Index", 
+                 xlab="", col="deepskyblue", type='l')
+  
+  title(paste(x, "Recessions\n\n"),col.main="darkorange3")
+  
+  title(expression(phantom("\n\nUsing the Non-Parametic Method and ") * 
+                     "Coincident Index"),col.main="deepskyblue")
+  
+  title(expression(phantom("\n\n ") *
+                     
+                     "Using the Non-Parametic Method and " * phantom(" Coincident Index"),col.main="black")) 
+  
+  minor.tick(nx=10)
+  
+  rect(xleft=statetables2$Peaks,xright = statetables2$Troughs, ybottom = -50, ytop=50, density=20, col = "darkorange3", border=TRUE)
+  
+}
+
+brentstategraph<- function(x){
+  
+  statetables2 <- statetables %>% 
+    filter(State==x)
+
+  
+  graphics::plot(x=bcrude$Date, y=bcrude$Brent_Crude, ylab="Price of Brent Crude", 
+                 xlab="", col="forestgreen", type='l')
+  
+  title(paste(x, "Recessions\n\n"),col.main="darkorange3")
+  
+  title(expression(phantom("\n\nUsing the Non-Parametic Method and ") * 
+                     "Price of Brent Crude Oil"),col.main="forestgreen")
+  
+  title(expression(phantom("\n\n ") *
+                     
+                     "Using the Non-Parametic Method and " * phantom(" Price of Brent Crude Oil"), col.main="black")) 
+  
+  minor.tick(nx=5)
+  
+  rect(xleft=statetables2$Peaks,xright = statetables2$Troughs, ybottom = -50, ytop=400, density=20, 
+       col = "darkorange3", border=TRUE)
+  
+}
+
+ohiomanugraph<- function(x){
+  graphics::plot(x=ohio_manu$Date, y=ohio_manu$Emp_Manufacturing_Thousands, ylab="Employees (Thousands)", 
+                 xlab="", col="purple", type='l')
+  
+  title(paste("Ohio Recessions\n\n"),col.main="darkorange3")
+  
+  title(expression(phantom("\n\nUsing the Non-Parametic Method and ") * 
+                     "Number of Ohio Manufacturing Employees"),col.main="purple")
+  
+  title(expression(phantom("\n\n ") *
+                     
+                     "Using the Non-Parametic Method and " * phantom(" Number of Ohio Manufacturing Employees"),col.main="black")) 
+  
+  minor.tick(nx=5)
+  
+  rect(xleft=statetableohio$Peaks,xright = statetableohio$Troughs, ybottom = 0, ytop=3000, density=20, col = "darkorange3", border=TRUE)
+  }  
+
+msagraph<- function(x){
+  
+  mastermsa3 <- mastermsa %>% 
+    filter(MSA==x)
+  
+  msatables2 <- msarecessiontotal %>% 
+    filter(MSA==x)
+  
+  graphics::plot(x=mastermsa3$Date, y=mastermsa3$Coincident, ylab="Coincident Index", 
+                 xlab="", col="deepskyblue", type='l')
+  
+  title(paste(x, "Recessions\n\n"),col.main="darkorange3")
+  
+  title(expression(phantom("\n\nUsing the Non-Parametic Method and ") * 
+                     "Coincident Index"),col.main="deepskyblue")
+  
+  title(expression(phantom("\n\n ") *
+                     
+                     "Using the Non-Parametic Method and " * phantom(" Coincident Index"),col.main="black")) 
+  
+  minor.tick(nx=5)
+  
+  rect(xleft=msatables2$Peaks,xright = msatables2$Troughs, ybottom = -50, ytop=50, density=20, col = "darkorange3", border=TRUE)
+  
+}
+
+brentmsagraph<- function(x){
+  
+  msatables2 <- msarecessiontotal %>% 
+    filter(MSA==x)
+
+  
+  graphics::plot(x=bcrude$Date, y=bcrude$Brent_Crude, ylab="Price of Brent Crude", 
+                 xlab="", col="forestgreen", type='l')
+  
+  title(paste(x, "Recessions\n\n"),col.main="darkorange3")
+  
+  title(expression(phantom("\n\nUsing the Non-Parametic Method and ") * 
+                     "Price of Brent Crude Oil"),col.main="forestgreen")
+  
+  title(expression(phantom("\n\n ") *
+                     
+                     "Using the Non-Parametic Method and " * phantom(" Price of Brent Crude Oil"),col.main="black")) 
+  
+  minor.tick(nx=5)
+  
+  rect(xleft=msatables2$Peaks,xright = msatables2$Troughs, ybottom = -50, ytop=400, density=20, col = "darkorange3", border=TRUE)
+  
+}
+
+naicsgraph <- function(x, z){
+  
+  naicsdata2 <- naicsdata %>% 
+    filter(State==x)
+  
+  if(z=="Percent of Employed Citizens"){
+    y <- 5
+    } else {y <- 4}
+
+  naicsdata2 <- naicsdata2 %>% mutate( ToHighlight = ifelse( NAICS_Code == "31", "yes", "no" ))
+  
+  ggplot(naicsdata2, aes(y=naicsdata2[,y], x=reorder(Description, naicsdata2[,y]), fill=ToHighlight))+     geom_bar(stat = "identity") + 
+    theme(plot.title = element_text(hjust = 0.5)) +
+    coord_flip() +
+    scale_fill_manual( values = c( "yes"="orange", "no"="blue" ), guide = FALSE ) +
+    xlab("")+ylab(paste(z))
+
+}
+
+shintabler<- function(y) {
+  mastertable3 <-msarecessiontotal %>% 
+    filter(MSA==y)
+  kable(mastertable3, caption=paste("MSA Recessions in", y)) %>% 
+    kable_styling(bootstrap_options = c("striped", "condensed")) %>% 
+    column_spec(1, bold = T, color = "white", background = "blue")
+}
+
+msa_appendix_table<- function(y) {
+  mastertable3 <-msarecessiontotal %>% 
+    arrange(MSA, Peaks)
+  kable(mastertable3, caption="MSA Recession Table") %>% 
+    kable_styling(bootstrap_options = c("striped", "condensed")) %>% 
+    column_spec(1, bold = T, color = "white", background = "blue")
+}
+  
+state_appendix_table<- function(y) {
+  mastertable3 <-statetables %>% 
+    arrange(State, Peaks)
+  kable(mastertable3, caption="State Recession Table") %>% 
+    kable_styling(bootstrap_options = c("striped", "condensed")) %>% 
+    column_spec(1, bold = T, color = "white", background = "blue")
+}
+
+allslidegraph<- function(x) {
+
+  a<- masterstate2 %>% 
+    filter(Date==x)
+  b<- mastermsa %>% 
+    filter(Date==x)
+  b<- left_join(b, msacluster, by="MSA") %>% 
+    select(-Cluster) %>% 
+    mutate(Latitude= as.numeric(as.character(Latitude))) %>% 
+    mutate(Longitude= as.numeric(as.character(Longitude)))        
+  
+  left_join(stategeogtable, a, by="State") %>% 
+    st_transform(crs = "+init=epsg:4326") %>%
+    leaflet(width = "100%") %>%
+    addProviderTiles(provider = "Esri.WorldImagery") %>% 
+    addPolygons(popup = ~ str_extract(State, "^([^,]*)"),
+                stroke = TRUE,
+                weight = 0.2,
+                smoothFactor = 0.1,
+                color = "black",
+                opacity = 1,
+                fillOpacity = 0.5,
+                fillColor = ~ color_pal(Recession)) %>% 
+    addCircles(data=b, lat = b$Latitude, lng = b$Longitude,
+               stroke = TRUE, weight = 0.7,
+               label = b$MSA,
+               radius = 40000,
+               color = "black",
+               opacity = 1,
+               fillOpacity = .75,
+               fillColor = ~ color_pal(Recession)) %>%
+    setView(lat = 38, lng = -100, zoom = 2.5)
+}
+
+ohioslidegraph<- function(x) {
+  
+  a<- masterstate2 %>% 
+    filter(Date==x)
+  b2<- mastermsa %>% 
+    filter(Date==x)
+  b2<- left_join(b2, msacluster, by="MSA") %>% 
+    select(-Cluster) %>% 
+    mutate(Latitude= as.numeric(as.character(Latitude))) %>% 
+    mutate(Longitude= as.numeric(as.character(Longitude)))        
+  
+  left_join(stategeogtable, a, by="State") %>% 
+    st_transform(crs = "+init=epsg:4326") %>%
+    leaflet(width = "100%") %>%
+    addProviderTiles(provider = "Esri.WorldImagery") %>% 
+    addPolygons(popup = ~ str_extract(State, "^([^,]*)"),
+                stroke = TRUE,
+                weight = 0.2,
+                smoothFactor = 0.1,
+                color = "black",
+                opacity = 1,
+                fillOpacity = 0.5,
+                fillColor = ~ color_pal(Recession)) %>% 
+    addCircles(data=b2, lat = b2$Latitude, lng = b2$Longitude,
+               stroke = TRUE, weight = 0.7,
+               label = b2$MSA,
+               radius = 40000,
+               color = "black",
+               opacity = 1,
+               fillOpacity = .75,
+               fillColor = ~ color_pal(Recession)) %>%
+    setView(lat = 39.92, lng = -82, zoom = 5)
+}
+
+
+# Herfindahl Index
+
+herfindahlgraph <- left_join(stategeogtable, clusters, by="State") %>% 
+  st_transform(crs = "+init=epsg:4326") %>%
+  leaflet(width = "100%") %>%
+  addProviderTiles(provider = "Esri.WorldImagery") %>% 
+  addPolygons(popup = ~ str_extract(State, "^([^,]*)"),
+              stroke = TRUE,
+              weight = 0.2,
+              smoothFactor = 0.1,
+              color = "black",
+              opacity = 1,
+              fillOpacity = 0.5,
+              fillColor = ~ color_pal4(Herfindahl_Index)) %>% 
+  setView(lat = 38, lng = -100, zoom = 2.5) %>% 
+  addLegend(pal = color_pal4, 
+            values = clusters$Herfindahl_Index, 
+            position = "bottomright", 
+            title = "Herfindahl Index")
+
+# Months in Recession Graph
+
+totalmonthsgraph <- left_join(stategeogtable, clusters, by="State") %>% 
+  st_transform(crs = "+init=epsg:4326") %>%
+  leaflet(width = "100%") %>%
+  addProviderTiles(provider = "Esri.WorldImagery") %>% 
+  addPolygons(popup = ~ str_extract(State, "^([^,]*)"),
+              stroke = TRUE,
+              weight = 0.2,
+              smoothFactor = 0.1,
+              color = "black",
+              opacity = 1,
+              fillOpacity = 0.5,
+              fillColor = ~ color_pal3(Months)) %>% 
+  setView(lat = 38, lng = -100, zoom = 2.5) %>% 
+  addLegend(pal = color_pal3, 
+            values = clusters$Months, 
+            position = "bottomright", 
+            title = "Total Months in Recession")
+
+stateclustermapgraph <- left_join(stategeogtable, clusters, by="State") %>% 
+  st_transform(crs = "+init=epsg:4326") %>%
+  leaflet(width = "100%") %>%
+  addProviderTiles(provider = "Esri.WorldImagery") %>% 
+  addPolygons(popup = ~ str_extract(State, "^([^,]*)"),
+              stroke = TRUE,
+              weight = 0.2,
+              smoothFactor = 0.1,
+              color = "black",
+              opacity = 1,
+              fillOpacity = 0.5,
+              fillColor = ~ color_pal2(Cluster)) %>% 
+  setView(lat = 38, lng = -100, zoom = 2.5) %>% 
+  addLegend(colors = c("deepskyblue", "orange", "dimgrey", "forestgreen"),
+            labels=c("Finance States", "Oil States", "Manufacturing States", "Mixed Economy States"),
+            position = "bottomright", 
+            title = "Cluster")
+
+
+msaclustermapgraph<- msacluster %>% 
+  leaflet(width = "100%") %>%
+  addProviderTiles(provider = "Esri.WorldImagery") %>% 
+  addCircles(data=msacluster, lat = msacluster$Latitude, lng = msacluster$Longitude,
+             stroke = TRUE, weight = 0.7,
+             label = msacluster$MSA,
+             radius = 40000,
+             color = "black",
+             opacity = 1,
+             fillOpacity = .75,
+             fillColor = ~ color_pal5(Cluster)) %>%
+  setView(lat = 38, lng = -100, zoom = 3) %>% 
+  addLegend(colors = c("deepskyblue", "orange", "dimgrey", "darkseagreen", "firebrick"),
+            labels=c("Traditional Cities", "New Growth Cities", "Great Recession Cities", "Mid-Size Cities", "Long Recession Cities"),
+            position = "bottomright", 
+            title = "Cluster")
+
+corrplotoptions<- c("Nowcast", "Three Month Forecast", "Six Month Forecast")
+```
+
+##  {.tabset}
+
+### Introduction
+#### A Comparison and Analysis of MSA and State Business Cycles Using a Non-Parametric Approach
+
+<br>
+State and Metro Area business cycles are useful in that they can tell a more nuanced story of how a particular area is doing at a given point in time. While understanding of federal-level recessions is useful for policymaking and businesses operating nationally, it follows that a more focused analysis of a particular area can be of more use to local policymakers and certain small businesses or parts of larger businesses. There are several states that tend to follow the national pattern, entering and exiting recessions within a month or two of the national economy. There are also states that tend to have their own recessions when the United States is expanding or vice versa.
+<br>
+
+In order to compare State and Metro Area business cycles and get a better picture on what is happening at a granular level, business cycles need to be calculated and dated. Unlike on the federal level where the National Bureau of Economic Research provides a widely accepted benchmark for the effectiveness of a methodology, there is no such benchmark at the state and metropolitan statistical area (hereafter referred to as MSA) level. A common strategy utilized at the state level is to use a methodology that has been proven to be successful at mirroring the NBER business cycle dates. In *Identifying State-Level Recessions* (Brown 2017), two of the most common, the Bry-Boschan Method and the Markov Regime-Switching Model are used for the states in the Tenth District to identify state level recessions. Both methods perform well using the Federal Reserve Bank of Philadelphia's National Coincident Index, which is created using the same methodology as their State Coincident Indices, providing confidence in their ability to accurately date state business cycles. The key advantage of the Markov Regime-Switching Model is that it is quicker to identify recessions in real time per *A Comparison of the Real-Time Performance of Business Cycle Dating Methods* (Chauvet & Piger 2008). It is important to note, however, that both methods were found to be accurate, faster than the NBER, and unlikely to report false positives by Chauvet and Piger. At the MSA level, a dynamic factor model is used to derive an economic coincident index using a maximum likelihood approach allowing for arbitrary patterns of missing data due to a greater degree of missing data at the MSA level (Arias, Gascon, & Rapach 2016). At which point a non-parametric algorithm, as in *Metro Business Cycles* (Arias, Gascon, & Rapach 2016) can be used to date business cycles. In this paper, a non-parametric approach is used based in part off of that used in *Metro Business Cycles* with a few alterations. Alterations were made to better choose between "competing" peaks or troughs for both the 50 states and the 50 MSAs previously studied by Arias, Gascon, and Rapach.
+
+To use the example below to evaluate state recessions, you will need to download the Federal Reserve Bank of Philadelphia's State Coincident Index and use an algorithm to find "tipping points". Similar Calculations are possible with slightly modified code structure for the Federal Reserve Bank of St. Louis' Economic Coincident Indicators, for various Metropolitan Statistical Areas. Using data from these sources has key advantages, namely that they have already been adjusted for seasonality and were the kalman-smoothed latent variables from the respective Federal Reserves' dynamic factor models.
+<br>
+
+The non-parametric business cycle dating algorithm used in *Metro Business Cycles* had three conditions that needed to be met for a particular month to be labelled a peak. First, month i must be greater than zero, while month i+1 is less than zero. Second, the summation of months i, i-1, and i-2 must be positive. The third condition follows from the common rule of thumb that two consecutive quarters of negative growth implies a recession. This means that for condition three to be met the summation of months i+1, i+2, and i+3 must be negative, and the summation of months i+4, i+5, and i+6 must also be negative. If all three conditions were met, then the month would be labelled a business cycle peak. However, in practice this algorithm creates "competing" peaks on occasion when there is excessive volatility. A good example of this is the New Orleans-Metairie MSA, which has experienced a large number of recessions since the start of the data in 1990. In order to remove "competing" peaks, the author added two more conditions. First, there can only be one peak in a quarter. If this occurs, the summation of months between the two peaks is examined. If the summation is positive, then the later peak should be used, and if the summation is negative, then the first peak should be used. Second, there cannot be two peaks between troughs. A similar method of "competition" to the fourth condition is utilized to choose between peaks to find the true inter-trough peak. This must be iterated alongside an analogous process for troughs to find the true peaks and troughs. The same five conditions are used for troughs, with the caveat that the signs are flipped for the conditions. The majority of the lift in R (or whatever language is used for this analysis) is in wrangling the data into the right type throughout the process of going through the five conditions, so that the algorithm works correctly for all 50 MSAs. An example of the 5 conditions in R, albeit without the intermediate wrangling for brevity, is:
+
+``` {r eval=FALSE}
+# Conditions 1-3
+
+  for(i in 3:(length(y$Date)-6)) {
+    peaks[i]<- if(x[i]<0) {
+      0} else if(x[i+1]>0) {
+        0} else if(sum(x[i],x[i-1],x[i-2])<0) {
+          0} else if(sum(x[i+1],x[i+2],x[i+3])>0) {
+            0} else if(sum(x[i+4],x[i+5],x[i+6])>0) {
+              0} else {1}
+    
+    troughs[i]<- if(x[i]>0) {
+      0} else if(x[i+1]<0) {
+        0} else if(sum(x[i],x[i-1],x[i-2])>0) {
+          0} else if(sum(x[i+1],x[i+2],x[i+3])<0) {
+            0} else if(sum(x[i+4],x[i+5],x[i+6])<0) {
+              0} else {1}
+  }
+  
+# Condition 4
+
+  for(i in 3:length(tabling2$date)) {
+    if(tabling2$Troughs[i]==1 & tabling2$Troughs[i-2]==1) {
+      tabling2$Troughs[i]<- 0
+    }
+  }
+  for(i in 3:length(tabling2$date)) {
+    if(tabling2$Peaks[i]==1 & tabling2$Peaks[i-2]==1) {
+      tabling2$Peaks[i]<- 0
+    }
+  }
+# Condition 5 (Iterated multiple times for peaks and troughs)
+
+  if(peaktablecheck$Index[1]<troughtablecheck$Index[1]) {
+    peaktablecheck$ind2[1]<- 0
+  }
+  for(i in 1:length(troughtablecheck$Trough)) {
+    for(j in 1:length(peaktablecheck$Peak)) {
+      if(peaktablecheck$Index[j]>troughtablecheck$Index[length(troughtablecheck$Trough)]) {
+        peaktablecheck$ind2[j]<- length(troughtablecheck$Trough)
+      } else if(peaktablecheck$Index[j]>troughtablecheck$Index[i] & peaktablecheck$Index[j]<troughtablecheck$Index[i+1]) {
+        peaktablecheck$ind2[j]<- i
+      }}
+  }
+  
+  for(i in 1:length(unique(peaktablecheck$ind2))) {
+    if(is.na(peaktablecheck$ind2[i+1])) {
+      print("")
+    } else if(peaktablecheck$ind2[i] == peaktablecheck$ind2[i+1]) {
+      if(sum(x[peaktablecheck$Index[i]:peaktablecheck$Index[i+1]])<0) {
+        peaktablecheck<- peaktablecheck[-(i+1),]
+      } else {
+        peaktablecheck<- peaktablecheck[-(i),]
+      }} 
+  }
+
+```
+<br>
+
+If you have any questions, comments, or concerns about the project I can be contacted at kirschil@mail.uc.edu. 
+
+<br>
+
+### State Cycles
+#### An Introduction and Examination of State Business Cycles
+
+State business cycles are useful in that they can tell a more nuanced story of how a particular area is doing at a given point in time. While understanding of federal-level recessions is useful for policymaking and businesses operating nationally, it follows that a more focused analysis of a particular area can be of more use to local policymakers and certain small businesses or parts of larger businesses. There are several states that tend to follow the national pattern, entering and exiting recessions within a month or two of the national economy. There are also states that tend to have their own recessions when the United States is expanding or vice versa.
+<br>
+
+One such state is Wyoming. Wyoming is interesting in that it has had six total recessions since 1979, compared to five nationally. Only during three of the national recessions was Wyoming in recession at the same time as the United States. However, in *Identifying State-Level Recessions*, Brown (2017) found that the most recent Wyoming Recession (2015-2016) coincided with a 70% decline in the price of oil. Overlaying the recessions in Wyoming on a graph of oil prices (in dollars) over time shows that two of the three recessions in Wyoming coincided with decreasing oil prices between 1990 and 2019. However, it is important to note that oil prices are just one factor in the sectoral makeup of Wyoming that leads to a lower level of similarity between Wyoming and the United States' business cycles compared to other states.
+<br>
+
+```{r echo=FALSE}
+
+ui <- dashboardPage(skin = "blue",
+                    dashboardHeader(title= "Fig. 1: Wyoming Business Cycles", titleWidth = 350),
+                    dashboardSidebar(disable=TRUE),
+                    dashboardBody(
+                      fillPage(padding = 0,
+           box(title="", id="normal", solidHeader = TRUE, status = "primary", width=12,
+                    plotOutput("plot1", height = 250))
+            )))
+
+
+server <- function(input, output) {
+   
+    output$plot1<- renderPlot({
+    brentstategraph("Wyoming")
+      })
+
+    }
+
+
+shinyApp(ui=ui, server=server)
+
+```
+*Data from the Federal Reserve Bank of Philadelphia, and author's calculations.*
+
+<br>
+
+Many states have sectoral compositions or trends that can explain why they differ from the national economy. The difficulty lies in identifying the correct reasoning behind why the state differs. Examples of energy based economies like New Mexico, who rank third nationally in oil production per Investopedia, that didn't enter recession in 2015 show that there are many different factors at play and isolating a single one can be difficult.
+
+<br>  
+
+```{r echo=FALSE}
+ui <- dashboardPage(skin = "blue",
+                    dashboardHeader(title= "Fig. 2: Explore Oil Prices and State Recessions", titleWidth = 450),
+                    dashboardSidebar(disable=TRUE),
+                    dashboardBody(
+                      fillPage(padding = 0,
+           box(title="", id="normal", solidHeader = TRUE, status = "primary",
+                    plotOutput("plot1", height = 250), width=7), 
+            
+            box(title="State to Examine", background = "black", height = 125, width=5, 
+                    selectInput("variable", "State:", choices= sort(unique(masterstate2$State)), selected = "New Mexico"))
+            )))
+
+
+server <- function(input, output) {
+   
+    output$plot1<- renderPlot({
+    brentstategraph(input$variable)
+      })
+
+   }
+
+
+shinyApp(ui=ui, server=server)
+
+```
+*Data from the FRED St. Louis Database and author's calculations.*
+
+<br>
+
+Even though New Mexico did not have as clear of a relationship with the price of oil, it still aligned with the federal business cycle as a whole, bar the 1990-1991 Federal Recession and 1985-1986 New Mexico Recession. Like New Mexico, Montana uses a large portion of its natural resources in industry compared to other states. Montana, however, has had three more recessions than the United States since 1979 (1986-1986, 1994-1995, 1997). A state that is less dependent on its natural resources, like New York for example, can have very different business cycles while still entering recession the same number of times as Montana.
+<br>  
+```{r echo=FALSE}
+
+ui <- dashboardPage(skin = "blue",
+                    dashboardHeader(title= "Fig. 3: A Business Cycle Comparison", titleWidth = 400),
+                    dashboardSidebar(disable=TRUE),
+                    dashboardBody(
+                      fluidRow(
+           box(title="", id="normal", solidHeader = TRUE, status = "primary", width=12,
+                    plotOutput("plot1", height = 250)),
+           box(title="", id="normal", solidHeader = TRUE, status = "primary", width=12,
+                    plotOutput("plot2", height = 250))
+            )))
+
+
+server <- function(input, output) {
+   
+    output$plot1<- renderPlot({
+    stategraph("Montana")
+      })
+
+    output$plot2<- renderPlot({
+    stategraph("New York")
+      })
+    }
+
+
+shinyApp(ui=ui, server=server)
+
+```
+*Data from the Federal Reserve Bank of Philadelphia, and author's calculations.*
+
+<br>
+
+Arkansas provides an example of a state that appears to be much more resilient than the national economy. Since 1979, Arkansas has only spent `r statetables %>% filter(State=="Arkansas") %>% summarise(total=sum(Months)) %>% pull()` months in recession compared to the United States' `r statetables %>% filter(State=="United States") %>% summarise(total=sum(Months)) %>% pull()` months in recession. A clue as to its resilience lies in its makeup of industries. Agriculture is the top industry in Arkansas, with rice being the single largest agricultural export. The third largest industry is food manufacturing, and fifth is aerospace. Rice and food manufacturing are seen as recession resistant as they would be considered a consumer staple. Rice may also have the added benefit of being a substitute for more expensive foods in times of recessions.
+  
+This resilience is somewhat surprising, however, in part due to the fact that most of its neighbors do not share the same resilience. Mississippi has been in recession `r statetables %>% filter(State=="Mississippi") %>% summarise(total=sum(Months)) %>% pull()` months to Arkansas' `r statetables %>% filter(State=="Arkansas") %>% summarise(total=sum(Months)) %>% pull()` months even though they share a similar geography and top industry, Agriculture. Mississippi, though, has manufacturing and gambling as its 2nd and 4th largest industries which are both highly pro-cyclical. Missouri, Tennessee, and Louisiana have spent `r statetables %>% filter(State=="Missouri") %>% summarise(total=sum(Months)) %>% pull()`, `r statetables %>% filter(State=="Tennessee") %>% summarise(total=sum(Months)) %>% pull()`, and `r statetables %>% filter(State=="Louisiana") %>% summarise(total=sum(Months)) %>% pull()` months in recession respectively since 1979. Arkansas is at a clear advantage over all the states surrounding it, except for Texas, which has also only spent `r statetables %>% filter(State=="Texas") %>% summarise(total=sum(Months)) %>% pull()` months in recession since 1979. Texas appears to have far more economic diversity than Arkansas, with the most striking similarity being the Trade, Transportation, and Utilities super-sector which contains 20.1% of nonfarm employment in Texas, while Transportation is the 2nd largest industry in Arkansas.
+
+<br> 
+
+```{r echo=FALSE}
+ui <- dashboardPage(skin = "blue",
+                    dashboardHeader(title= "Fig. 4: Explore State Recessions", titleWidth = 350),
+                    dashboardSidebar(disable=TRUE),
+                    dashboardBody(
+                      fillPage(padding = 0,
+           box(title="", id="normal", solidHeader = TRUE, status = "primary", width=7,
+                    plotOutput("plot1", height = 250)), 
+            
+            box(title="State to Examine", background = "black", height = 125, width=5, 
+                    selectInput("variable", "State:", choices= sort(unique(masterstate2$State)), selected="Arkansas"))
+            )))
+
+
+server <- function(input, output) {
+   
+    output$plot1<- renderPlot({
+    stategraph(input$variable)
+      })
+   }
+
+
+shinyApp(ui=ui, server=server)
+
+```
+```{r echo=FALSE}
+ui <- dashboardPage(skin = "blue",
+                    dashboardHeader(title= "Fig. 5: State Recession Tables", titleWidth = 350),
+                    dashboardSidebar(disable=TRUE),
+                    dashboardBody(
+                      fluidRow(
+           box(title="", id="normal", solidHeader = TRUE, status = "primary", width=7,
+                    tableOutput("table1")), 
+            
+            box(title="State to Examine", background = "black", height = 125, width=5, 
+                    selectInput("variable", "State:", choices= sort(unique(masterstate2$State)), selected="Arkansas"))
+           
+           
+            )))
+
+
+server <- function(input, output) {
+    
+    output$table1<- function(){
+      req(input$variable)
+      statetables %>% 
+    filter(State==input$variable) %>% 
+    mutate(Peak=Peaks, Trough=Troughs) %>% 
+        select(Peak, Trough, Months) %>% 
+  kable() %>% 
+    kable_styling(bootstrap_options = c("striped", "condensed"))
+    }
+   }
+
+
+shinyApp(ui=ui, server=server)
+
+```
+*Data from the FRED St. Louis Database and author's calculations.*
+
+<br>
+
+While the industrial composition is important when looking at state recessions, there is some evidence that diversifying the industries in a state can reduce the amount of time spent in a recession. The Herfindahl Index is commonly used to determine the size of firms in relation to the industry as a whole, in order to indicate the amount of concentration present. Instead of looking at market concentration, it is used here to determine the concentration of particular industries within each of the fifty states. Logically one would think that the more heavily a state is concentrated in a few industries, the more susceptible they would be to recessions. However as you can see in the comparison below, this appears to have a small effect, but there are clearly other factors that are impacting the number of months that a state has spent in recession. It is important to note, however, that this is not necessarily telling the full story as of right now. Since the industrial composition of 2012 is being used for this graph, and the months spent in recession is for a time period between 1979 and the present, additional data will need to be collected in order to determine the effect of industry concentration on time spent in a recessionary state.
+<br>
+
+```{r echo=FALSE}
+
+ui <- dashboardPage(skin = "blue",
+                    dashboardHeader(title= "Fig. 6: Herfindahl Index by State", titleWidth = 350),
+                    dashboardSidebar(disable=TRUE),
+                    dashboardBody(
+                      fillPage(padding = 0,
+                               box(title="", id="normal", solidHeader = TRUE, status = "primary",
+                                   leafletOutput("plot1", height = 250), width = 12)
+                               )))
+
+
+server <- function(input, output) {
+  
+  output$plot1<- renderLeaflet({
+    herfindahlgraph
+  })
+
+}
+
+
+shinyApp(ui=ui, server=server)
+
+```
+*Data from the FRED St. Louis Database, United States Census Bureau, and author's calculations.*
+
+<br>
+
+```{r echo=FALSE}
+
+ui <- dashboardPage(skin = "blue",
+                    dashboardHeader(title= "Fig. 7: Months in Recession by State Since 1979", titleWidth = 500),
+                    dashboardSidebar(disable=TRUE),
+                    dashboardBody(
+                      fillPage(padding = 0,
+                               box(title="", id="normal", solidHeader = TRUE, status = "primary",
+                                   leafletOutput("plot1", height = 250), width = 12)
+                               )))
+
+
+server <- function(input, output) {
+  
+  output$plot1<- renderLeaflet({
+    totalmonthsgraph
+  })
+
+}
+
+
+shinyApp(ui=ui, server=server)
+
+```
+*Data from the FRED St. Louis Database and author's calculations.*
+
+<br>
+
+As you can see in the above figure, the number of months spent in recession appears to have "spillover effects" on nearby states. Visually, you can see this as groupings of similarly shaded states. Notably, the Midwest has spent a greater number of months in recession, on average, compared to the rest of the United States. The South and Southwest have been more resilient, and can be seen to have spent less time in recession since 1979. Louisiana has spent more time in recession, partially due to Hurricane Katrina, while Alabama also has spent more time than the surrounding states in recession. Many of the Western states have been resilient as well, with the notable exceptions of Montana, which has spent the most time in recession among the 50 states, and California. Montana is an interesting case, in that the reason for its `r monthtablestate %>% filter(State=="Montana") %>% select(Months) %>% pull()` months spent in recession is not necessarily attributable to one recession in particular. The state's eight recessions were all relatively short, bar the 23 months in 1981 and 44 months in 2007. California on the other hand spent 26 months from July 1990 - September 1992 in recession, which was far longer than its neighboring states; Oregon, who didn't enter recession in the early 1990's, and Arizona and Nevada's eleven and six months. The primary causes of these interstate differences were the approximately 20,000 layoffs in the Aerospace industry in California in addition to weaknesses in Real Estate and Services sectors (Sanchez 1991). A final example of a small cluster of states defying the regional trend is New Hampshire and Vermont in the Northeast. These neighboring states have spent far less time in recession since 1979 than other states in the region. While geographic location can be interesting when looking at recessions across the fifty states, there are certainly large parts that can be explained by similarities in sectoral composition and focus as opposed to spillover effects or regional economies. 
+
+By looking at industrial composition and recession data for all of the states since 1979, we can get a better picture of what industries or actions can reduce the likelihood of a recession as well as visualize how well each state's economic history aligns with that of the United States. In areas where there is little alignment, having state or even MSA level recession information available would be helpful for policymakers who would be unable to effectively use national data to make informed choices. Companies may also see the benefit in understanding how to weight locations for new stores being built to take advantage of unaligned business cycles in an attempt to better standardize returns across the national business cycle.
+
+<br>
+
+#### Clustering States on Business Cycles
+
+In *The Propagation of Regional Recessions* (Hamilton & Owyang 2011), a better way of grouping states is used. Instead of using geographical location, clustering is used based off the sectoral composition of each state. Hamilton and Owyang also found that these clusters were more useful for determining timing of entering a recession than prediction of a recession occurring. While there is evidence of states with high levels of Oil production having their own recessions, in general most states have recessions around the same time period regardless of composition. They found three non-mutually exclusive clusters, "Oil States", "Manufacturing States", and "Finance States". Similar to the states, recessions also have distinguishing characteristics. The 2008 Recession is known for its housing bubble, while the dot-com bubble of the late '90s and early '00s happened for differing reasons. Some recessions, as mentioned earlier, are more localized and caused by fluctuations in the price of oil or other natural resources. Classifying recessions based on their characteristics and causes, then developing separate models for each recession type, where the start dates of states entering a recession is partially predicated off the cluster(s) they belong to would be a natural extension of this analysis. The main idea behind this being that by predicting each class of recession separately we can use these probabilities along with the probability of a state entering a recession based on the recession type to obtain a distribution of probabilities for various dates to be the date a state enters recession. Unfortunately, at the present moment there are several issues with attempting this approach; namely the low number of recession observations, the arbitrary nature of defining a recession by one trigger, and more. Ultimately, this study clustered states based off their business cycles. As expected, results were similar to those of Hamilton and Owyang in terms of states clustered together. Approaching from this direction allows conclusions to be made on the similarity of business cycles, as opposed to sectoral composition similarities' impact on business cycles.
+<br>
+
+```{r echo=FALSE} 
+ui <- dashboardPage(skin = "blue",
+                    dashboardHeader(title= "Fig. 8: Number of Clusters", titleWidth = 350),
+                    dashboardSidebar(disable=TRUE),
+                    dashboardBody(
+                      fillPage(padding = 0,
+                      
+           box(title="Within-cluster SSEs", id="normal", solidHeader = TRUE, status = "primary",
+                    plotOutput("plot1", height = 250)),
+           box(title="CH-Score Cluster Number Selector", id="normal", solidHeader = TRUE, status = "primary",
+                    plotOutput("plot2", height = 250))
+            )))
+
+server <- function(input, output) {
+  
+    output$plot1<- renderPlot({
+  qplot(wss_results$k, wss_results$wss) + 
+  geom_line() + 
+  xlab("Number of Clusters") + 
+  ylab("SSE") +
+  ggtitle("")+
+  geom_hline(yintercept = 1245, col="red")
+      })
+    output$plot2<- renderPlot({
+  qplot(ch_index_results$k, ch_index_results$ch) + 
+  geom_line() + 
+  xlab("Number of Clusters") + 
+  ylab("CH Score") +
+  ggtitle("")+
+  geom_vline(xintercept = 4, col="red")
+   })
+}
+shinyApp(ui=ui, server=server)
+
+```
+<br>
+
+When grouping the states into clusters based on dates in recession, analysis showed 4-5 clusters led to optimal results. Four clusters created groups that made more intuitive sense: the more developed "financial states", "oil states", "manufacturing states", and "mixed economy states", keeping similar naming to those used in previous studies where applicable. These clusters show groups of states that move together, not necessarily due to sectoral composition or geography. It is relatively clear from Figure 9 that the clusters are broken up into groups with a particular focus. The Midwestern states, known for manufacturing, along with several southern states like South Carolina who have large plants being grouped together isn't necessarily surprising. Washington being include in the same group is much more surprising, however. 
+
+<br>
+
+```{r echo=FALSE}
+
+ui <- dashboardPage(skin = "blue",
+                    dashboardHeader(title= "Fig. 9: Clustering Visualization", titleWidth = 350),
+                    dashboardSidebar(disable=TRUE),
+                    dashboardBody(
+                      fillPage(padding = 0,
+                               box(title="", id="normal", solidHeader = TRUE, status = "primary",
+                                   leafletOutput("plot1", height = 250), width = 12) 
+                      )))
+server <- function(input, output) {
+  
+  
+  output$plot1<- renderLeaflet({
+    stateclustermapgraph
+  })
+}
+shinyApp(ui=ui, server=server)
+
+```
+*Data from the Federal Reserve Bank of Philadelphia, and author's calculations.*
+
+<br>
+
+```{r echo=FALSE}
+ 
+ui <- dashboardPage(skin = "blue",
+                    dashboardHeader(title= "Fig. 10: Visualizing Cluster Centroid Differences", titleWidth = 450),
+                    dashboardSidebar(disable=TRUE),
+                    dashboardBody(
+                      fillPage(padding = 0,
+           box(title="", id="normal", solidHeader = TRUE, status = "primary",
+                    plotOutput("plot1", height = 250), width = 12) 
+            )))
+server <- function(input, output) {
+   
+   
+    output$plot1<- renderPlot({
+     ggplot(data=c5, stat="identity", position ="dodge", aes(x=dates, y=density, fill=Cluster))+
+  geom_area() +
+  facet_grid(Cluster ~ ., scales = "free_y") +
+        theme(strip.text.y = element_blank())+
+  scale_fill_manual(values = c("deepskyblue", "orange", "dimgrey", "forestgreen")) +
+  ylab("Recession")+ xlab("")+
+        scale_y_continuous(breaks = c(0, 0.5, 1))+
+  theme(plot.title = element_text(hjust = 0.5))
+      })
+   }
+shinyApp(ui=ui, server=server)
+```
+*Data from the Federal Reserve Bank of Philadelphia, and author's calculations.*
+
+<br>
+
+Figure 10 shows the differences in the centroids between the respective groups. The clearest difference lies in the Oil group, where you can visually see a difference around 2015-2016 and 1986-1987. These differences in the centroids show that the states clustered in that group tended to have recessions around those two time periods, while other clusters did not. The 1986 Oil Price Collapse is a relatively clear cause for the earlier of the two periods. The price drop from \$30 per barrel to around \$10 per barrel, due to Saudi Arabia collapsing the oil price on other producers to end their role as a swing producer (Gause 2015), had little impact on all the clusters bar Oil. In *Sultans of Swing: The Geopolitics of Falling Oil Prices*, Gause found the cause of the late 2014 oil price drop to be increased American production of oil as supply began to overtake demand. Since oil production in the United States is less cost efficient, it makes sense that states that rely on oil production are heavily dependent on the current and future oil prices for investment. 
+
+The Manufacturing and Finance state clusters tended to have recessions at similar times, although the recession in the early 1990s proved far more severe for the Finance cluster. Other than this instance, however, the Manufacturing cluster tended to have more severe recessions than the Finance cluster. The Mixed Economy cluster tended to have less severe recessions than either of the Finance or Manufacturing clusters. However, it is important to note that the Mixed Economy cluster moved less in lockstep than other clusters, and the 1990s show this tendency for only a few states to be in recession at a time, as opposed to the larger spikes present in the other clusters. 
+<br>
+
+#### Recession Nowcasting Using Extreme Gradient Boosting
+
+```{r echo=FALSE, include=FALSE}
+load("statesdata.RData")
+
+n<- 8850
+
+afteradd2<- statesdata[1:2]
+statesdata<- statesdata[c(-1,-2)]
+train.label.now <- statesdata$Recession[1:n]
+train.label.three <- statesdata$Three_Months_Out[1:n]
+train.label.six <- statesdata$Six_Months_Out[1:n]
+
+test.label.now <- statesdata$Recession[(n+1):length(statesdata$Coincident)]
+test.label.three <- statesdata$Three_Months_Out[(n+1):length(statesdata$Coincident)]
+test.label.six <- statesdata$Six_Months_Out[(n+1):length(statesdata$Coincident)]
+
+
+
+f4<- statesdata[c(3:18, 20:21, 26, 31, 36:38)]
+
+traindata<- as.matrix(f4[1:n,])
+testdata<- as.matrix(f4[(n+1):length(statesdata$Employed_Workforce),])
+
+dtrain.now <- xgb.DMatrix(data = traindata, label = train.label.now)
+dtrain.three <- xgb.DMatrix(data = traindata, label = train.label.three)
+dtrain.six <- xgb.DMatrix(data = traindata, label = train.label.six)
+
+
+model.now <- xgboost(data = dtrain.now, max.depth = 6, eta = 1, nthread = 2, nrounds = 2, objective = "binary:logistic")
+
+model.three <- xgboost(data = dtrain.three, max.depth = 6, eta = 1, nthread = 2, nrounds = 2, objective = "binary:logistic")
+
+model.six <- xgboost(data = dtrain.six, max.depth = 6, eta = 1, nthread = 2, nrounds = 2, objective = "binary:logistic")
+
+pred.now.test<- as.data.frame(predict(model.now, testdata))
+pred.now.train<- as.data.frame(predict(model.now, traindata))
+
+pred.three.test<- as.data.frame(predict(model.three, testdata))
+pred.three.train<- as.data.frame(predict(model.three, traindata))
+
+pred.six.test<- as.data.frame(predict(model.six, testdata))
+pred.six.train<- as.data.frame(predict(model.six, traindata))
+
+names(pred.now.test)<- "Probability"
+names(pred.now.train)<- "Probability"
+predictions.now<- rbind(pred.now.train, pred.now.test)
+
+names(pred.three.test)<- "Probability"
+names(pred.three.train)<- "Probability"
+predictions.three<- rbind(pred.three.train, pred.three.test)
+
+names(pred.six.test)<- "Probability"
+names(pred.six.train)<- "Probability"
+predictions.six<- rbind(pred.six.train, pred.six.test)
+
+results.now<- as.data.frame(cbind(afteradd2, predictions.now, statesdata$Recession))
+names(results.now)[4]<- "Actual"
+results.now$Date<- as.yearmon(results.now$Date, format="%b %Y")
+
+results.three<- as.data.frame(cbind(afteradd2, predictions.three, statesdata$Three_Months_Out))
+names(results.three)[4]<- "Actual"
+results.three$Date<- as.yearmon(results.three$Date, format="%b %Y")
+
+results.six<- as.data.frame(cbind(afteradd2, predictions.six, statesdata$Six_Months_Out))
+names(results.six)[4]<- "Actual"
+results.six$Date<- as.yearmon(results.six$Date, format="%b %Y")
+
+fstate<- function(x, y){
+ if(y=="Nowcast"){
+   z<- results.now
+ } else if(y=="Three Month Forecast"){
+   z<- results.three
+ } else if(y=="Six Month Forecast"){
+   z<- results.six
+ }
+  resultsx22<- z %>% 
+    filter(State==x)
+  
+  resultsx23<- resultsx22 %>% 
+    mutate(Actual=(round(Actual,2))) %>% 
+    mutate(Probability=(round(Probability,2)))
+  
+  
+  plotA<- ggplot(resultsx23, aes(x=Date)) + 
+    geom_line(aes(y = Actual, colour = "Actual")) + 
+    geom_line(aes(y = Probability, colour = "Prediction"))+
+    scale_colour_manual(values=c("darkorange3", "deepskyblue"))+
+    xlab("Date")+ ylab("Recession Likelihood")+ labs(colour="")+ ggtitle("")+
+    scale_y_continuous(labels = scales::percent) + theme(legend.position="none")
+  
+  ggplotly(plotA, tooltip = c("x", "y")) %>%
+    config(displayModeBar = F)
+}
+
+xgbpred <- ifelse (pred.now.test > 0.3,1,0)
+xgbpred<- as.factor(as.vector(xgbpred))
+test.label2<- as.factor(test.label.now)
+state.now.matrix <- confusionMatrix(xgbpred, test.label2)
+
+state.now.conf <- c(state.now.matrix$table[2,1], state.now.matrix$table[1,1], 
+               state.now.matrix$table[2,2], state.now.matrix$table[1,2])
+
+xgbpred <- ifelse (pred.three.test > 0.3,1,0)
+xgbpred<- as.factor(as.vector(xgbpred))
+test.label2<- as.factor(test.label.three)
+state.three.matrix <- confusionMatrix(xgbpred, test.label2)
+
+state.three.conf <- c(state.three.matrix$table[2,1], state.three.matrix$table[1,1], 
+                    state.three.matrix$table[2,2], state.three.matrix$table[1,2])
+
+xgbpred <- ifelse (pred.six.test > 0.3,1,0)
+xgbpred<- as.factor(as.vector(xgbpred))
+test.label2<- as.factor(test.label.six)
+state.six.matrix <- confusionMatrix(xgbpred, test.label2)
+
+state.six.conf <- c(state.six.matrix$table[2,1], state.six.matrix$table[1,1], 
+                    state.six.matrix$table[2,2], state.six.matrix$table[1,2])
+
+statecorrplots<- function(x){
+  ActualValue <- factor(c(0, 0, 1, 1))
+  PredictedValue <- factor(c(1, 0, 1, 0))
+  
+  
+  if(x=="Nowcast"){
+    Yz <- state.now.conf
+  } else if(x=="Three Month Forecast"){
+    Yz <- state.three.conf
+  } else {
+    Yz <- state.six.conf
+  }
+  
+  dfx <- data.frame(ActualValue, PredictedValue, Yz)
+  
+  ggplot(data =  dfx, mapping = aes(x = ActualValue, y = PredictedValue)) +
+    geom_tile(aes(fill = Yz), colour = "white") +
+    geom_text(aes(label = sprintf("%1.0f", Yz)), vjust = 1) +
+    scale_fill_gradient(low = "deepskyblue", high = "firebrick") +
+    theme_bw() + theme(legend.position = "none")+
+    ggtitle("State Confusion Matrix 2005-2018")+ ylab("Predicted Value") + xlab("Actual Value") + 
+    theme(plot.title = element_text(hjust = 0.5))
+}
+
+```
+
+Using Extreme Gradient Boosting and the data that would be available at that time, it is possible to attempt nowcasting, or business cycle dating of the current time period. Data publishing lags mean that there are some issues with accuracy and false positives. However, as a whole, the model performs quite well and can allow the user to determine the most likely starting dates of a recession prior to being updated. The update will use the previous non-parametric methodology for business cycle dating once that information becomes available approximately eight to nine months later. Other methods were attempted to nowcast and forecast using the dataset, such as Logistic Regression, Support Vector Machines, and Neural Networks. However, the sequential ensemble model framework of boosting enabled improvements in accuracy, specifically in reducing Type II error for a more cautious model that is less likely to miss a current or incoming recession.
+
+The results from 2005 and onward should be focused on, as that was the tested time period. More data will be useful in determining the accuracy of the predictions, and the next recession will be important in determining the predictive power of the model. While the model should not be overfitted with an eta of 0.3, there are many cases of models that perform well during training and testing, but fail to take into account future trends and become irrelevant quickly. The accuracy on the test data is `r round(100*(state.now.matrix$table[1,1] + state.now.matrix$table[2,2])/(state.now.matrix$table[1,1] + state.now.matrix$table[2,2] + state.now.matrix$table[1,2] + state.now.matrix$table[2,1]), 2)`%. The rate that a recession was predicted when there was no recession was `r round(100*(state.now.matrix$table[2,1]/(state.now.matrix$table[2,1]+state.now.matrix$table[1,1])),2)`%. Of more concern when looking at the model, however, was the `r round(100*(state.now.matrix$table[1,2]/(state.now.matrix$table[1,2]+state.now.matrix$table[2,2])),2)`% of the time where there was a recession, but the model did not predict one to occur. While the threshold was set at 0.3 for this, the threshold should be considered more as a guideline than a binding decision point, and other data should be considered in addition to this when in the 25-40% range. It is important to note that this is not a determination of "probability" in the traditional sense, but rather a measure that is given a threshold to determine whether or not the state is in recession. Therefore, any value greater than the threshold would indicate that a recession is more likely than not, even if that number is 35%, which would seem to be showing a less likely event if the measurement was looking at probability. 
+
+#### Forecasting Using Extreme Gradient Boosting
+
+
+A similar approach to forecasting using Extreme Gradient Boosting is less successful. This is likely due to even greater data lag issues than in the nowcasting. Three months out from the date of interest can be modeled using only information that is available at the present moment. While this approach does a good job of predicting the 2008 recession, it fails to predict the oil caused state recessions in areas like North Dakota in 2015. Once again, the test time period was 2005 and onward. 
+
+The model preferred for both three and six month forecasting also uses a threshold of 0.3 and an eta of 0.3. Once again, minimizing the true negative rate was a priority when determing the best model, with some care taken to keep the false positive rate low as well. The three month model had an accuracy of `r round(100*(state.three.matrix$table[1,1] + state.three.matrix$table[2,2])/(state.three.matrix$table[1,1] + state.three.matrix$table[2,2] + state.three.matrix$table[1,2] + state.three.matrix$table[2,1]), 2)`%, while the six month model had an accuracy of `r round(100*(state.six.matrix$table[1,1] + state.six.matrix$table[2,2])/(state.six.matrix$table[1,1] + state.six.matrix$table[2,2] + state.six.matrix$table[1,2] + state.six.matrix$table[2,1]), 2)`%. The rate that a recession was predicted when there was no recession was `r round(100*(state.three.matrix$table[2,1]/(state.three.matrix$table[2,1]+state.three.matrix$table[1,1])),2)`% for the three month model and `r round(100*(state.six.matrix$table[2,1]/(state.six.matrix$table[2,1]+state.six.matrix$table[1,1])),2)`% for the six month model. Of greater concern when looking at the model, however, was the `r round(100*(state.three.matrix$table[1,2]/(state.three.matrix$table[1,2]+state.three.matrix$table[2,2])),2)`% of the time where there was a recession, but the three month model did not predict one to occur. This value was `r round(100*(state.six.matrix$table[1,2]/(state.six.matrix$table[1,2]+state.six.matrix$table[2,2])),2)`% for the six month model.
+<br>
+
+```{r echo=FALSE}
+
+ui <- dashboardPage(skin = "blue",
+                    dashboardHeader(title= "Fig. 11: State Forecasting and Nowcasting", titleWidth = 450),
+                    dashboardSidebar(disable=TRUE),
+                    dashboardBody(
+                      fillPage(padding = 0,
+           box(title="", id="normal", solidHeader = TRUE, status = "primary", width=7,
+                    plotlyOutput("plot1", height = 250)), 
+            box(title="State to Examine", background = "black", width=5, 
+                    selectInput("variable", "State:", choices= sort(unique(afteradd2$State)), selected="Ohio")),
+           box(title="Forecast Length", background = "black", width=5, 
+                    selectInput("variable.two", "Forecast:", choices= c("Nowcast", "Three Month Forecast",
+                                                                 "Six Month Forecast"), selected="Nowcast"))
+            )))
+
+
+server <- function(input, output) {
+  
+   
+    output$plot1<- renderPlotly({
+    par(mfrow=c(1,1))
+    par(mar = c(4, 5, 4, 4)) 
+    fstate(input$variable, input$variable.two)})
+
+
+   }
+
+
+shinyApp(ui=ui, server=server)
+
+```
+*Data from the Federal Reserve Bank of Philadelphia, Federal Reserve Bank of St. Louis, Bureau of Labor Statistics, United States Census Bureau, and author's calculations.*
+
+<br>
+
+
+```{r echo=FALSE}
+ui <- dashboardPage(skin = "blue",
+                    dashboardHeader(title= "Fig. 12: State Confusion Matrices", titleWidth = 350),
+                    dashboardSidebar(disable=TRUE),
+                    dashboardBody(
+                      fillPage(padding = 0,
+           box(title="", id="normal", solidHeader = TRUE, status = "primary", width=7,
+                    plotOutput("plot1", height = 250)), 
+            
+            box(title="Explore Model Performance", background = "black", height = 125, width=5, 
+                    selectInput("variable", "Model:", choices= corrplotoptions, selected="Nowcast"))
+            )))
+
+
+server <- function(input, output) {
+   
+    output$plot1<- renderPlot({
+    statecorrplots(input$variable)
+      })
+    
+
+   }
+
+
+shinyApp(ui=ui, server=server)
+
+```
+
+However, it should be noted that this model would not satisfy the Lucas Critique. This is due to the fact that it is based on historical data and not micro-foundations. The stability of the model over time due to policy or financial innovations is inherently uncertain and there is no mechanism to combat this inside the model. In order to use the model in an optimal manner, results should be checked and tested for accuracy over time, not just in the test split of the data. As new information is incorporated, changes may need to be made. Additionally, these models should not be viewed as a single point of information, but instead be viewed in the context of working with other models utilizing more financial data. Looking at predictions from multiple organizations and individuals using different data will allow for a better prediction to be made.
+
+
+#### Conclusion
+
+Studying state business cycles and effectively dating them allows for not only a comparison of the states in general, but also the creation of a database that can be used to create new insights. Using this data to cluster states could give policymakers the ability to see states that have had a similar history at a glance and dive deeper into why they are similar to other states in their cluster. This understanding could also be leveraged in an attempt to emulate the success of an ostensibly similar state with a better record in terms of recessions. The most important application of this dataset, however, is the extreme gradient boosted nowcasting. Having a solid understanding of the position of a state economy at the current point in time based on calculations that can be done using publicly available data would allow for a better understanding of the risks at any point in time at the state level. While forecasting is an extremely interesting and pertinent area of focus, this study only provides a basic level of short-term forecasting, as that was not the main focus. The short-term forecasting provided is less trustworthy than the nowcasting, but can provide a more effective estimate at the state level when looked at in combination with financial and federal data and trends. A similar analysis is conducted at the Metropolitan Statistical Area level in the next section.
+<br>
+
+#### Table 1: State Recession Statistics
+
+```{r echo=FALSE}
+
+kable(monthtablestate, caption=paste("Months in Recession by State")) %>% 
+    kable_styling(bootstrap_options = c("striped", "condensed")) %>% 
+    column_spec(1, bold = T, color = "white", background = "blue") %>%
+  scroll_box(height = "540px")
+```
+*Data from the Federal Reserve Bank of Philadelphia's State Coincident Index and author's calculations.*
+
+<br>
+
+### MSA Cycles
+#### An Examination of Metropolitan Statistical Area Business Cycles
+
+Metro business cycles are useful in that they can tell a more nuanced story of how a particular area is doing at a given point in time, to an even greater extent than state business cycles. The fifty metropolitan statistical areas (MSAs) studied tend to have spent less time in recession than the state they are in, as well as the nation as a whole, with some exceptions. Many of the MSAs studied have clear advantages over their surrounding states, including education levels, greater diversity in industry, larger number of skilled professionals, etc. These advantages can manifest themselves into a resilience to recession. Places like Nashville spent only `r monthtable %>% filter(MSA=="Nashville") %>% select(Months) %>% pull()` months in recession, while Oklahoma City and Baltimore spent only `r monthtable %>% filter(MSA=="Oklahoma City") %>% select(Months) %>% pull()` and `r monthtable %>% filter(MSA=="Baltimore") %>% select(Months) %>% pull()` months in recession respectively. In contrast, the states they are based in had `r monthtablestate %>% filter(State=="Tennessee") %>% select(Months) %>% pull()`, `r monthtablestate %>% filter(State=="Oklahoma") %>% select(Months) %>% pull()`, and `r monthtablestate %>% filter(State=="Maryland") %>% select(Months) %>% pull()` months spent in recession over the same time period (1990-2018). There were of course, some MSAs that were less resilient than their states. New Orleans is the worst example of this, having spent a staggering `r monthtable %>% filter(MSA=="New Orleans") %>% select(Months) %>% pull()` months in recession since 1990, having a recession that lasted longer than the total number of months spent in recession by any other MSA from 1990-2019. In contrast, Louisiana only spent `r monthtablestate %>% filter(State=="Louisiana") %>% select(Months) %>% pull()` months in recession over the same time period. Surprisingly, Houston had the second largest difference compared to their state, spending `r monthtable %>% filter(MSA=="Houston") %>% select(Months) %>% pull()` months in recession to Texas' `r monthtablestate %>% filter(State=="Texas") %>% select(Months) %>% pull()` months. In fact, due to Texas' performance as a state, Dallas also spent more time in recession than the state.
+<br>
+
+```{r echo=FALSE}
+
+
+ui <- dashboardPage(skin = "blue",
+                    dashboardHeader(title= "Fig. 1: Explore MSA Recessions", titleWidth = 350),
+                    dashboardSidebar(disable=TRUE),
+                    dashboardBody(
+                      fillPage(padding = 0,
+           box(title="", id="normal", solidHeader = TRUE, status = "primary", width=7,
+                    plotOutput("plot1", height = 250)), 
+            
+            box(title="MSA to Examine", background = "black", height = 125, width=5,
+                    selectInput("variable", "MSA:", choices= sort(unique(msarecessiontotal$MSA)), selected="Cincinnati"))
+            )))
+
+
+server <- function(input, output) {
+   
+    output$plot1<- renderPlot({
+    msagraph(input$variable)
+      })
+
+   }
+
+
+shinyApp(ui=ui, server=server)
+
+```
+```{r echo=FALSE}
+
+ui <- dashboardPage(skin = "blue",
+                    dashboardHeader(title= "Fig. 2: MSA Recession Tables", titleWidth = 350),
+                    dashboardSidebar(disable=TRUE),
+                    dashboardBody(
+                      fillPage(padding = 0,
+           box(title="", id="normal", solidHeader = TRUE, status = "primary", width=7,
+                    tableOutput("table1")), 
+            
+            box(title="MSA to Examine", background = "black", height = 125, width=5,
+                    selectInput("variable", "MSA:", choices= sort(unique(msarecessiontotal$MSA)), selected="Cincinnati"))
+           
+           
+            )))
+
+
+server <- function(input, output) {
+
+    output$table1<- function(){
+      req(input$variable)
+      msarecessiontotal %>% 
+    filter(MSA==input$variable) %>% 
+    mutate(Peak=Peaks, Trough=Troughs) %>% 
+        select(Peak, Trough, Months) %>% 
+  kable() %>% 
+    kable_styling(bootstrap_options = c("striped", "condensed"))
+    }
+   }
+
+
+shinyApp(ui=ui, server=server)
+
+```
+*Data from the Federal Reserve Bank of Philadelphia, FRED St. Louis Database and author's calculations.*
+*Washington DC uses Maryland as its state when selected. MSAs that are in multiple states are considered a part of the state the actual city is in for the purposes of this graph. An example of this is the Cincinnati-Middletown, OH-KY-IN MSA which uses Ohio as its state.*
+
+<br>
+
+```{r echo=FALSE}
+
+ui <- dashboardPage(skin = "blue",
+                    dashboardHeader(title= "Fig. 3: Explore Oil Prices and MSA Recessions", titleWidth = 450),
+                    dashboardSidebar(disable=TRUE),
+                    dashboardBody(
+                      fillPage(padding = 0,
+           box(title="", id="normal", solidHeader = TRUE, status = "primary",
+                    plotOutput("plot1", height = 250), width=7), 
+            
+            box(title="MSA to Examine", background = "black", height = 125, width=5, 
+                    selectInput("variable", "State:", choices= sort(unique(mastermsa$MSA))))
+            )))
+
+
+server <- function(input, output) {
+   
+    output$plot1<- renderPlot({
+    brentmsagraph(input$variable)
+      })
+
+   }
+
+
+shinyApp(ui=ui, server=server)
+
+```
+*Data from the Federal Reserve Bank of Philadelphia, FRED St. Louis Database and author's calculations.*
+
+<br>
+
+Unlike states, there does not appear to be any clear categorization group types for the clusters. New Orleans was clustered with Norwalk, New Haven, Allentown, and Rochester due to the sheer amount of time they spent in recession relative to any of the other MSAs, except Detroit. Blue appears to be older key American cities, like New York, Washington DC, and Philadelphia with fairly diverse economies. The grey cluster seems to be cities that were hit hard by the Great Recession, and spent a greater than average amount of time in recession during that time. This group includes cities like Detroit and Tampa. The yellow cluster includes higher growth cities like Seattle, Denver, and Austin that have become more prominent over the last decade. The green cluster is composed of older medium to large size cities that have spent more time in recession than the "Traditional" cities cluster. Examples for this group are Cleveland and Richmond.
+
+There are not many clear trends in terms of regional groupings, although there are a few that stick out. Many of the "New Growth" cities are west of the Mississippi River. In contrast, many of the "Traditional" cities are located in the Northeast. Finally, there are a number of "Great Recession" cities in Florida, an area that was hit hard by the recession. It is interesting to note that the cities in Florida appear to have more in  common with regards to business cycles than other states such as California, which has metropolitan statistical areas in four of the five different clusters.
+<br>
+
+```{r echo=FALSE}
+
+ui <- dashboardPage(skin = "blue",
+                    dashboardHeader(title= "Fig. 4: Clustering by MSA", titleWidth = 350),
+                    dashboardSidebar(disable=TRUE),
+                    dashboardBody(
+                      fillPage(padding = 0,
+                               box(title="", id="normal", solidHeader = TRUE, status = "primary",
+                                   leafletOutput("plot1", height = 250), width = 12) 
+                      )))
+server <- function(input, output) {
+  
+  
+  output$plot1<- renderLeaflet({
+    msaclustermapgraph
+  })
+}
+shinyApp(ui=ui, server=server)
+
+```
+*Data from the Federal Reserve Bank of Philadelphia, and author's calculations.*
+
+<br>
+
+```{r echo=FALSE}
+
+ui <- dashboardPage(skin = "blue",
+                    dashboardHeader(title= "Fig. 5: States and MSAs in Recession by Date", titleWidth = 450),
+                    dashboardSidebar(disable=TRUE),
+                    dashboardBody(
+                      fillPage(padding = 0,
+                               box(title="", id="normal", solidHeader = TRUE, status = "primary",
+                                   leafletOutput("plot1", height = 250)), 
+                               box(title="Date to Examine", background = "black", height = 125,
+                    selectInput("variable", "Date:", choices= unique(mastermsa$Date), selected=as.yearmon("Jan 2008", format="%b %Y")))
+                               )))
+
+
+server <- function(input, output) {
+  
+  output$plot1<- renderLeaflet({
+    allslidegraph(input$variable)
+  })
+
+}
+
+
+shinyApp(ui=ui, server=server)
+
+```
+*Data from the Federal Reserve Bank of Philadelphia, FRED St. Louis Database and author's calculations.*
+
+<br>
+
+#### Extreme Gradient Boosting Nowcasting and Forecasting
+
+```{r echo=FALSE, include=FALSE} 
+
+load("msaboostdata2.RData")
+n<- 10721
+
+afteradd3<- msaboostdata[1:2]
+msaboostdata<- msaboostdata[c(-1,-2)]
+train.label.now <- msaboostdata$Recession[1:n]
+train.label.three <- msaboostdata$Threemonthsout[1:n]
+train.label.six <- msaboostdata$Sixmonthsout[1:n]
+
+test.label.now <- msaboostdata$Recession[(n+1):length(msaboostdata$Coincident)]
+test.label.three <- msaboostdata$Threemonthsout[(n+1):length(msaboostdata$Coincident)]
+test.label.six <- msaboostdata$Sixmonthsout[(n+1):length(msaboostdata$Coincident)]
+
+
+
+f4<- msaboostdata[c(1:2, 5:20)]
+
+traindata<- as.matrix(f4[1:n,])
+testdata<- as.matrix(f4[(n+1):length(msaboostdata$Employed_Workforce),])
+
+dtrain.now <- xgb.DMatrix(data = traindata, label = train.label.now)
+dtrain.three <- xgb.DMatrix(data = traindata, label = train.label.three)
+dtrain.six <- xgb.DMatrix(data = traindata, label = train.label.six)
+
+
+model.now <- xgboost(data = dtrain.now, max.depth = 6, eta = 1, nthread = 2, nrounds = 2, objective = "binary:logistic")
+
+model.three <- xgboost(data = dtrain.three, max.depth = 6, eta = 1, nthread = 2, nrounds = 2, objective = "binary:logistic")
+
+model.six <- xgboost(data = dtrain.six, max.depth = 6, eta = 1, nthread = 2, nrounds = 2, objective = "binary:logistic")
+
+pred.now.test<- as.data.frame(predict(model.now, testdata))
+pred.now.train<- as.data.frame(predict(model.now, traindata))
+
+pred.three.test<- as.data.frame(predict(model.three, testdata))
+pred.three.train<- as.data.frame(predict(model.three, traindata))
+
+pred.six.test<- as.data.frame(predict(model.six, testdata))
+pred.six.train<- as.data.frame(predict(model.six, traindata))
+
+names(pred.now.test)<- "Probability"
+names(pred.now.train)<- "Probability"
+predictions.now<- rbind(pred.now.train, pred.now.test)
+
+names(pred.three.test)<- "Probability"
+names(pred.three.train)<- "Probability"
+predictions.three<- rbind(pred.three.train, pred.three.test)
+
+names(pred.six.test)<- "Probability"
+names(pred.six.train)<- "Probability"
+predictions.six<- rbind(pred.six.train, pred.six.test)
+
+results.now.msa<- as.data.frame(cbind(afteradd3, predictions.now, msaboostdata$Recession))
+names(results.now.msa)[4]<- "Actual"
+results.now.msa$Date<- as.yearmon(results.now.msa$Date, format="%b %Y")
+
+results.three.msa<- as.data.frame(cbind(afteradd3, predictions.three, msaboostdata$Threemonthsout))
+names(results.three.msa)[4]<- "Actual"
+results.three.msa$Date<- as.yearmon(results.three.msa$Date, format="%b %Y")
+
+results.six.msa<- as.data.frame(cbind(afteradd3, predictions.six, msaboostdata$Sixmonthsout))
+names(results.six.msa)[4]<- "Actual"
+results.six.msa$Date<- as.yearmon(results.six.msa$Date, format="%b %Y")
+
+f42<- function(x, y){
+ if(y=="Nowcast"){
+   z<- results.now.msa
+ } else if(y=="Three Month Forecast"){
+   z<- results.three.msa
+ } else if(y=="Six Month Forecast"){
+   z<- results.six.msa
+ }
+  resultsx22<- z %>% 
+    filter(MSA==x)
+  
+  resultsx23<- resultsx22 %>% 
+    mutate(Actual=(round(Actual,2))) %>% 
+    mutate(Probability=(round(Probability,2)))
+  
+  
+  plotA<- ggplot(resultsx23, aes(x=Date)) + 
+    geom_line(aes(y = Actual, colour = "Actual")) + 
+    geom_line(aes(y = Probability, colour = "Prediction"))+
+    scale_colour_manual(values=c("darkorange3", "deepskyblue"))+
+    xlab("Date")+ ylab("Recession Likelihood")+ labs(colour="")+ ggtitle("")+
+    scale_y_continuous(labels = scales::percent) + theme(legend.position="none")
+  
+  ggplotly(plotA, tooltip = c("x", "y")) %>%
+    config(displayModeBar = F)
+}
+
+xgbpred <- ifelse (pred.now.test > 0.3,1,0)
+xgbpred<- as.factor(as.vector(xgbpred))
+test.label2<- as.factor(test.label.now)
+msa.now.matrix <- confusionMatrix(xgbpred, test.label2)
+
+msa.now.conf <- c(msa.now.matrix$table[2,1], msa.now.matrix$table[1,1], 
+               msa.now.matrix$table[2,2], msa.now.matrix$table[1,2])
+
+xgbpred <- ifelse (pred.three.test > 0.25,1,0)
+xgbpred<- as.factor(as.vector(xgbpred))
+test.label2<- as.factor(test.label.three)
+msa.three.matrix <- confusionMatrix(xgbpred, test.label2)
+
+msa.three.conf <- c(msa.three.matrix$table[2,1], msa.three.matrix$table[1,1], 
+                    msa.three.matrix$table[2,2], msa.three.matrix$table[1,2])
+
+xgbpred <- ifelse (pred.six.test > 0.25,1,0)
+xgbpred<- as.factor(as.vector(xgbpred))
+test.label2<- as.factor(test.label.six)
+msa.six.matrix <- confusionMatrix(xgbpred, test.label2)
+
+msa.six.conf <- c(msa.six.matrix$table[2,1], msa.six.matrix$table[1,1], 
+                    msa.six.matrix$table[2,2], msa.six.matrix$table[1,2])
+
+
+
+msacorrplots<- function(x){
+  ActualValue <- factor(c(0, 0, 1, 1))
+  PredictedValue <- factor(c(1, 0, 1, 0))
+  
+  
+  if(x=="Nowcast"){
+    Yz <- msa.now.conf
+  } else if(x=="Three Month Forecast"){
+    Yz <- msa.three.conf
+  } else {
+    Yz <- msa.six.conf
+  }
+  
+  dfx <- data.frame(ActualValue, PredictedValue, Yz)
+  
+  ggplot(data =  dfx, mapping = aes(x = ActualValue, y = PredictedValue)) +
+    geom_tile(aes(fill = Yz), colour = "white") +
+    geom_text(aes(label = sprintf("%1.0f", Yz)), vjust = 1) +
+    scale_fill_gradient(low = "deepskyblue", high = "firebrick") +
+    theme_bw() + theme(legend.position = "none")+
+    ggtitle("MSA Confusion Matrix 2005-2018")+ ylab("Predicted Value") + xlab("Actual Value") + 
+    theme(plot.title = element_text(hjust = 0.5))
+}
+
+
+```
+
+The models built for the metropolitan statistical areas contain some differences when compared to the models built for states in the previous section. The primary issue being that data on the MSA level is released much more slowly than data at the state level. However, this was combated by including data from the state level in addition to what MSA data would be available at the point in time during which the nowcast or forecast took place. Additional issues included a smaller number of observations than were used for the states and lack of standardized MSA level data. Nonetheless, the ensemble model built to combat this has `r round(100*(msa.now.matrix$table[1,1] + msa.now.matrix$table[2,2])/(msa.now.matrix$table[1,1] + msa.now.matrix$table[2,2] + msa.now.matrix$table[1,2] + msa.now.matrix$table[2,1]), 2)`% accuracy with a threshold of 0.3 on the test data from January 2005 until January of 2018. However, it is important to note that the model did miss `r round(100*(msa.now.matrix$table[1,2]/(msa.now.matrix$table[1,2]+msa.now.matrix$table[2,2])),2)`% of the dates in recession. When the economy was not in recession, there was a `r round(100*(msa.now.matrix$table[2,1]/(msa.now.matrix$table[2,1]+msa.now.matrix$table[1,1])),2)`% chance that a false positive would occur.
+
+The three month forecast is, as expected, slightly less accurate than the nowcast at `r round(100*(msa.three.matrix$table[1,1] + msa.three.matrix$table[2,2])/(msa.three.matrix$table[1,1] + msa.three.matrix$table[2,2] + msa.three.matrix$table[1,2] + msa.three.matrix$table[2,1]), 2)`% accuracy. The six month forecast continued the trend, having `r round(100*(msa.six.matrix$table[1,1] + msa.six.matrix$table[2,2])/(msa.six.matrix$table[1,1] + msa.six.matrix$table[2,2] + msa.six.matrix$table[1,2] + msa.six.matrix$table[2,1]), 2)`% accuracy. The false positive rate that a recession was predicted when there was no recession was `r round(100*(msa.three.matrix$table[2,1]/(msa.three.matrix$table[2,1]+msa.three.matrix$table[1,1])),2)`% for the three month model and `r round(100*(msa.six.matrix$table[2,1]/(msa.six.matrix$table[2,1]+msa.six.matrix$table[1,1])),2)`% for the six month model. Of greater concern when looking at the model, however, was the `r round(100*(msa.three.matrix$table[1,2]/(msa.three.matrix$table[1,2]+msa.three.matrix$table[2,2])),2)`% of the time where there was a recession, but the three month model did not predict one to occur. This value was `r round(100*(msa.six.matrix$table[1,2]/(msa.six.matrix$table[1,2]+msa.six.matrix$table[2,2])),2)`% for the six month model. Both the three and six month models had a threshold of 0.25 and an eta of 0.3.
+
+<br>
+
+```{r echo=FALSE}
+
+ui <- dashboardPage(skin = "blue",
+                    dashboardHeader(title= "Fig. 6: MSA Forecasting and Nowcasting", titleWidth = 400),
+                    dashboardSidebar(disable=TRUE),
+                    dashboardBody(
+                      fillPage(padding = 0,
+           box(title="", id="normal", solidHeader = TRUE, status = "primary", width=7, 
+                    plotlyOutput("plot1", height = 250)), 
+            box(title="MSA to Examine", background = "black", width=5, 
+                    selectInput("variable", "MSA:", choices= sort(unique(afteradd3$MSA)), selected="Cincinnati")),
+           box(title="Forecast Length", background = "black", width=5, 
+                    selectInput("variable.two", "Forecast:", choices= c("Nowcast", "Three Month Forecast",
+                                                                 "Six Month Forecast"), selected="Nowcast"))
+            )))
+
+
+server <- function(input, output) {
+  
+   
+    output$plot1<- renderPlotly({
+    par(mfrow=c(1,1))
+    par(mar = c(4, 5, 4, 4)) 
+    f42(input$variable, input$variable.two)})
+
+
+   }
+
+
+shinyApp(ui=ui, server=server)
+
+```
+*Data from the Federal Reserve Bank of Philadelphia, Federal Reserve Bank of St. Louis, Bureau of Labor Statistics, United States Census Bureau, and author's calculations.*
+
+<br>
+
+```{r echo=FALSE}
+
+ui <- dashboardPage(skin = "blue",
+                    dashboardHeader(title= "Fig. 7: MSA Confusion Matrices", titleWidth = 350),
+                    dashboardSidebar(disable=TRUE),
+                    dashboardBody(
+                      fillPage(padding = 0,
+           box(title="", id="normal", solidHeader = TRUE, status = "primary", width=7,
+                    plotOutput("plot1", height = 250)), 
+            
+            box(title="Explore Model Performance", background = "black", height = 125, width=5, 
+                    selectInput("variable", "Model:", choices= corrplotoptions, selected="Nowcast"))
+            )))
+
+
+server <- function(input, output) {
+   
+    output$plot1<- renderPlot({
+    msacorrplots(input$variable)
+      })
+    
+
+   }
+
+
+shinyApp(ui=ui, server=server)
+
+```
+
+<br>
+
+Once again, it should be noted that this model would not satisfy the Lucas Critique.  This is due to the fact that it is based on historical data and not micro-foundations. The stability of the model over time due to policy or financial innovations is inherently uncertain and there is no mechanism to combat this inside the model. In order to use the model in an optimal manner, results should be checked and tested for accuracy over time, not just in the test split of the data. As new information is incorporated, changes may need to be made. Additionally, these models should not be viewed as a single point of information, but instead be viewed in the context of working with other models utilizing more financial data. Looking at predictions from multiple organizations and individuals using different data will allow for a better prediction to be made.
+
+<br>
+<br>
+
+#### Table 1: MSA Months in Recession Ranking
+
+```{r echo=FALSE}
+kable(monthtable, caption=paste("")) %>% 
+    kable_styling(bootstrap_options = c("striped", "condensed")) %>% 
+    column_spec(1, bold = T, color = "white", background = "blue") %>%
+  scroll_box(height = "540px")
+```
+
+<br>
+
+### Case Study: Ohio
+#### Ohio and Three Metropolitan Statistical Areas: An Examination of Business Cycles
+
+Ohio has been found to be relatively similar in terms of business cycles to the United States as a whole. Ohio has generally moved with the United States, entering and exiting recessions slightly before and after the United States. An interesting finding on Ohio is its tendency to have double-dip recessions. Every recession since 1979 following a period of positive growth has been followed by a second recession, except for the Great Recession. This double-dip has occurred after ten, six, and five months of exiting a recession. The double-dip recession that took place between 2001 and 2003 is of particular interest due to the sentiment that Ohio never managed to fully bounce back prior to the Great Recession. The two recessions in Ohio, from 2001-2003, lasted three times longer than the national recession did, at 21 months total compared to 7 months. Dr. Veronica Kalich, of Baldwin Wallace University, attributes this to the disappearance of manufacturing jobs, and the slower than national average job growth in other areas. This can be seen in the figure below, which dates the major downward shift in manufacturing employment in Ohio around the time that Ohio entered the 2001-2003 recessions. In prior periods of recession Ohio was always in recession when the nation was, and appears to have returned to this state of mirroring during the 2008-2010 recession. It is interesting to note that Ohio enters recessions before or at the same time as the United States in every national recession since 1979. This may be due to the relative prominence of manufacturing in the state, and industrial production's status as a leading indicator. 
+<br>
+
+```{r echo=FALSE}
+
+ui <- dashboardPage(skin = "blue",
+                    dashboardHeader(title= "Fig. 1: Effect of Manufacturing Job Loss on Ohio", titleWidth = 500),
+                    dashboardSidebar(disable=TRUE),
+                    dashboardBody(
+                      fillPage(padding = 0,
+           box(title="", id="normal", solidHeader = TRUE, status = "primary", width=12,
+                    plotOutput("plot1", height = 250))
+            )))
+
+
+server <- function(input, output) {
+   
+    output$plot1<- renderPlot({
+    ohiomanugraph(1)
+      })
+
+    }
+
+
+shinyApp(ui=ui, server=server)
+
+```
+*Data from the FRED St. Louis Database and author's calculations.*
+
+<br>
+
+Analyzing the Census Bureau's Core Business Statistics and focusing on the sectoral composition of paid employees and the sectoral breakdown in terms of sales, shipments, receipts, and revenue allows for some degree of comparison between the sectoral compositions of the states. Ohio is known for having a greater degree of manufacturing than most other states, and in 2012, 8.53% of the surveyed paid employees worked in the Manufacturing Sector. More impressive, however, was the 18.01% of sales, shipments, receipts, and revenue in Ohio the sector accounted for. Surprisingly, Ohio's manufacturing is not as integral as the manufacturing of other Midwest states, such as Indiana, Michigan, and Kentucky. All three of these neighbors had higher percentages of sectoral employment and sales, shipments, receipts, and revenue as a percent of the state total. Ohio is however, significantly more reliant on its manufacturing sector than states like New York, Montana, and North Carolina. In the Exploratory Tools section these relationships can be examined further, with interactive graphs available that can explore all 50 states. 
+<br>
+
+```{r echo=FALSE}
+
+ui <- dashboardPage(skin = "blue",
+                    dashboardHeader(title= "Fig. 2: Industry Importance by State, 2012", titleWidth = 450),
+                    dashboardSidebar(disable=TRUE),
+                    dashboardBody(
+                      fillPage(padding = 0,
+           box(title="", id="normal", solidHeader = TRUE, status = "primary",
+                    plotOutput("plot1", height = 250)), 
+           
+            
+            box(title="State to Examine", background = "black",
+                    selectInput("variable", "State:", choices= sort(unique(naicsdata$State)), selected="Ohio")),
+           
+           box(title="Variable to Examine", background = "black",
+                    selectInput("variable2", "Variable:", choices= c("Percent of Employed Citizens", "Percent of Value of Business Done"), selected="Percent of Employed Citizens"))
+            )))
+
+
+server <- function(input, output) {
+  
+   
+    output$plot1<- renderPlot({
+    naicsgraph(input$variable, input$variable2)
+      })
+
+
+   }
+
+
+shinyApp(ui=ui, server=server)
+
+```
+*Data from the United States Census Bureau, and author's calculations.*
+<br>
+
+Since February of 1990 Ohio has been in recession for approximately `r statetables %>% filter(State=="Ohio" & Peaks > startdate3) %>% summarise(total=sum(Months)) %>% pull()` months (February of 1990 chosen because it is the start of available data at the Metropolitan Statistical Area level). Since the start of the State Coincident Index's data in April of 1979, Ohio has been in recession for `r statetables %>% filter(State=="Ohio") %>% summarise(total=sum(Months)) %>% pull()` months. This is compared to the `r statetables %>% filter(State=="United States" & Peaks > startdate3) %>% summarise(total=sum(Months)) %>% pull()` months since 1990 and `r statetables %>% filter(State=="United States") %>% summarise(total=sum(Months)) %>% pull()` months since 1979 for the United States as a whole. The majority of this difference lies in the aforementioned recession from 2001-2003 and the early 1980's. The three largest MSAs in Ohio, the Cleveland-Elyria MSA, Columbus MSA, and the Cincinnati-Middletown OH-KY-IN MSA all spent significantly fewer months in recession than the state as a whole since 1979. Cincinnati has been the least effected by recessions, spending only `r msarecessiontotal %>% filter(MSA=="Cincinnati") %>% summarise(total=sum(Months)) %>% pull()` months in recession. This is `r statetables %>% filter(State=="Ohio" & Peaks > startdate3) %>% summarise(total=sum(Months)) %>% pull() - msarecessiontotal %>% filter(MSA=="Cincinnati") %>% summarise(total=sum(Months)) %>% pull()` fewer months than Ohio and `r statetables %>% filter(State=="United States" & Peaks > startdate3) %>% summarise(total=sum(Months)) %>% pull() - msarecessiontotal %>% filter(MSA=="Cincinnati") %>% summarise(total=sum(Months)) %>% pull()` fewer months than the United States since 1990. Columbus had the second fewest months in recession at `r msarecessiontotal %>% filter(MSA=="Columbus") %>% summarise(total=sum(Months)) %>% pull()` months. While this was `r statetables %>% filter(State=="Ohio" & Peaks > startdate3) %>% summarise(total=sum(Months)) %>% pull() - msarecessiontotal %>% filter(MSA=="Columbus") %>% summarise(total=sum(Months)) %>% pull()` months less than Ohio, it was `r msarecessiontotal %>% filter(MSA=="Columbus") %>% summarise(total=sum(Months)) %>% pull() - statetables %>% filter(State=="United States" & Peaks > startdate3) %>% summarise(total=sum(Months)) %>% pull()` more than the United States. Cleveland had the worst record of the three MSAs, spending `r msarecessiontotal %>% filter(MSA=="Cleveland") %>% summarise(total=sum(Months)) %>% pull()` months in recession since 1990. Cleveland spent `r statetables %>% filter(State=="Ohio" & Peaks > startdate3) %>% summarise(total=sum(Months)) %>% pull() - msarecessiontotal %>% filter(MSA=="Cleveland") %>% summarise(total=sum(Months)) %>% pull()` months less than Ohio, but `r msarecessiontotal %>% filter(MSA=="Cleveland") %>% summarise(total=sum(Months)) %>% pull() - statetables %>% filter(State=="United States" & Peaks > startdate3) %>% summarise(total=sum(Months)) %>% pull()` more months than the United States in recession.
+<br>
+
+```{r echo=FALSE}
+ui <- dashboardPage(skin = "blue",
+                    dashboardHeader(title= "Fig. 3: Cincinnati, Ohio", titleWidth = 250),
+                    dashboardSidebar(disable=TRUE),
+                    dashboardBody(
+                      fillPage(padding = 0,
+           box(title="", id="normal", solidHeader = TRUE, status = "primary",
+                    plotOutput("plot2", height = 250)),
+           box(title="", id="normal", solidHeader = TRUE, status = "primary",
+                    plotOutput("plot1", height = 250))
+            )))
+
+
+server <- function(input, output) {
+   
+    output$plot1<- renderPlot({
+    stategraph("Ohio")
+      })
+    output$plot2<- renderPlot({
+    msagraph("Cincinnati")
+      })
+   }
+
+
+shinyApp(ui=ui, server=server)
+
+```
+<br>
+```{r echo=FALSE}
+shintabler("Cincinnati")
+```
+<br>
+
+The City of Cincinnati states that its key industries are Advanced Energy, Advanced Manufacturing, BioHealth, Consumer Products & Brand Development, Food Processing & Agriculture, and Finance, Insurance & IT. With large locally headquartered Fortune 500 companies like Kroger, Procter & Gamble, Macy's, and more, Cincinnati is home to many large brands. These companies are from a diverse range of industries and in conjunction with the smaller firms of Cincinnati help to create the 6th largest economy in the Midwest per the Cincinnati Enquirer. DATA USA found that Cincinnati's industries have a greater than expected number of companies in Management of Companies & Enterprises, Arts, Entertainment & Recreation,  and Administration, Support, & Waste Management Services. These strengths have made Cincinnati more resilient to recessions than Ohio as a whole, as well as the other MSAs in the state. It has also made Cincinnati more resilient than the majority of MSAs, sitting at #`r monthtable %>% filter(MSA=="Cincinnati") %>% select(Rank) %>% pull()` out of the 67 studied in terms of the least amount of time spent in recession.
+<br>
+
+```{r echo=FALSE}
+ui <- dashboardPage(skin = "blue",
+                    dashboardHeader(title= "Fig. 4: Columbus, Ohio", titleWidth = 250),
+                    dashboardSidebar(disable=TRUE),
+                    dashboardBody(
+                      fillPage(padding = 0,
+           box(title="", id="normal", solidHeader = TRUE, status = "primary",
+                    plotOutput("plot2", height = 250)),
+           box(title="", id="normal", solidHeader = TRUE, status = "primary",
+                    plotOutput("plot1", height = 250))
+            )))
+
+
+server <- function(input, output) {
+   
+    output$plot1<- renderPlot({
+    stategraph("Ohio")
+      })
+    output$plot2<- renderPlot({
+    msagraph("Columbus")
+      })
+   }
+
+
+shinyApp(ui=ui, server=server)
+
+```
+<br>
+```{r echo=FALSE}
+shintabler("Columbus")
+```
+<br>
+
+The Columbus area's key industries are manufacturing, logistics, business services, automotive, insurance, retail, and IT per The Columbus Region. Fortune 500 companies headquartered in Columbus include Nationwide Insurance, Cardinal Health, and more. Of the Ohio Metropolitan Statistical Areas, Columbus can lay claim to having the second most Fortune 500 headquarters after Cincinnati. DATA USA found Columbus' industries to have a greater than expected number of companies in Finance & Insurance, Transportation & Warehousing, Retail Trade, and Healthcare & Social Assistance. In addition, Columbus has the largest number of college graduates each year out of the Ohio MSAs. These factors have allowed Columbus to spend less time in recession than the state as a whole. Columbus also has slightly above average resilience when compared to other MSAs, at #`r monthtable %>% filter(MSA=="Columbus") %>% select(Rank) %>% pull()` out of the 67 studied in terms of the least amount of time spent in recession.
+<br>
+ 
+```{r echo=FALSE}
+ui <- dashboardPage(skin = "blue",
+                    dashboardHeader(title= "Fig. 5: Cleveland, Ohio", titleWidth = 250),
+                    dashboardSidebar(disable=TRUE),
+                    dashboardBody(
+                      fillPage(padding = 0,
+           box(title="", id="normal", solidHeader = TRUE, status = "primary",
+                    plotOutput("plot2", height = 250)),
+           box(title="", id="normal", solidHeader = TRUE, status = "primary",
+                    plotOutput("plot1", height = 250))
+            )))
+
+
+server <- function(input, output) {
+   
+    output$plot1<- renderPlot({
+    stategraph("Ohio")
+      })
+    output$plot2<- renderPlot({
+    msagraph("Cleveland")
+      })
+   }
+
+
+shinyApp(ui=ui, server=server)
+
+```
+<br>
+```{r echo=FALSE}
+shintabler("Cleveland")
+```
+<br>
+
+The City of Cleveland states that their key industries are Automotive Manufacturing, Banking & Finance, Electric & Lighting, Food Processing, Health Technology, and IT. Cleveland is home to Fortune 500 firms such as KeyCorp, Progressive Insurance, FirstEnergy Corp., and more. DATA USA found that Cleveland is home to greater number than expected firms in the Manufacturing, Healthcare & Social Assistance, and Accommodation & Food Services industries. Cleveland has used this diversity in industry relative to Ohio as a whole to its advantage, spending less time in recession than the state. However, Cleveland's focus on manufacturing has caused it to spend more time in recession than the Cincinnati and Columbus Metropolitan Statistical Areas. This focus also made Cleveland less resilient compared to other MSAs, at #`r monthtable %>% filter(MSA=="Cleveland") %>% select(Rank) %>% pull()` out of the 67 studied in terms of the least amount of time spent in recession.
+
+This relationship where MSAs appear to spend less time in recession compared to the state as a whole appears to hold across the states, and per Arias, Gascon, and Rapach's 2016 paper *Metro Business Cycles* this is likely in part due to the educational attainment of the population in those areas compared to the rest of Ohio. They found that the more educated and elastic the housing supply, the less severe the recessions, potentially leading to a quicker recovery. This seems to be at least partially true, as Ohio, Columbus and Cleveland actually had the same number of recessions occur, three, despite the disparity in the total number of months spent in recession. Cincinnati was slightly lower, at two recessions, as they managed to avoid the 1990-1991 recession. The largest differentiator was the length of the recession that began in 2001. For Ohio it lasted 28 months, compared to 6, 16, and 5 months for Columbus, Cleveland, and Cincinnati respectively. The 2008 recession still showed a quicker recovery in the MSAs, but by a far smaller amount than in 2001. Ohio's 23 months is much more similar to the 21, 20, and 18 in Columbus, Cleveland, and Cincinnati. 
+<br>
+
+```{r echo=FALSE}
+ui <- dashboardPage(skin = "blue",
+                    dashboardHeader(title= "Fig. 6: An Examination of Ohio Recessions", titleWidth = 450),
+                    dashboardSidebar(disable=TRUE),
+                    dashboardBody(
+                      fillPage(padding = 0,
+                               box(title="", id="normal", solidHeader = TRUE, status = "primary", width=7,
+                                   leafletOutput("plot1", height = 250)), 
+                               box(title="Date to Examine", background = "black", height = 125, width=5,
+                    selectInput("variable", "Date:", choices= unique(mastermsa$Date), selected=as.yearmon("Jan 2008", format="%b %Y")))
+                               )))
+
+
+server <- function(input, output) {
+  
+  output$plot1<- renderLeaflet({
+    ohioslidegraph(input$variable)
+  })
+
+}
+
+
+shinyApp(ui=ui, server=server)
+
+```
+*Data from the Federal Reserve Bank of Philadelphia, FRED St. Louis Database and author's calculations.*
+
+<br>
+
+<br>
+
+### Works Cited & Appendices
+#### Works Cited
+
+"1000 Largest US Cities By Population With Geographic Coordinates." Public, 31 May 2017, public.opendatasoft.com/explore/dataset/1000-largest-us-cities-by-population-with-geographic-coordinates/table/?sort=-rank.
+
+"All Employees: Manufacturing in Ohio." FRED, 21 Sept. 2018, fred.stlouisfed.org/series/OHMFGN.
+
+Arias, Maria, et al. Metro Business Cycles. Federal Reserve Bank of St. Louis Research Division, May 2016.
+
+Brown, Jason. "Identifying State-Level Recessions." Kansas City Federal Reserve, 2017, www.kansascityfed.org/~/media/files/publicat/econrev/econrevarchive/2017/1q17brown.pdf?la=en.
+
+"Cincinnati, OH." Data USA, datausa.io/profile/geo/cincinnati-oh/.
+
+"City of Cincinnati Key Industries." City of Cincinnati, choosecincy.com/Economic-Development/Industries.aspx.
+
+"Cleveland, OH." Data USA, datausa.io/profile/geo/cleveland-oh/.
+
+"Columbus, OH." Data USA, datausa.io/profile/geo/columbus-oh/.
+
+Coolidge, Alexander. "Greater Cincinnati's Economy Fastest-Growing in Midwest." Cincinnati.com, Cincinnati Enquirer, 13 Nov. 2017, www.cincinnati.com/story/money/2017/11/13/greater-cincinnatis-economy-fastest-growing-midwest/840139001/.
+
+"Data Access and Dissemination Systems (DADS)" American FactFinder, United States Census Bureau API, 5 Oct. 2010, factfinder.census.gov/faces/nav/jsf/pages/searchresults.xhtml?refresh=t.
+
+Gause, Gregory F. Sultans of Swing?: The Geopolitics of Falling Oil Prices. Brookings Doha Center, 2015, www.brookings.edu/wp-content/uploads/2015/03/En-Gause-PDF.pdf.
+
+"Global Price of Brent Crude." FRED, 12 July 2017, fred.stlouisfed.org/series/POILBREUSDM.
+
+Hamilton, James, and Michael Owyang. "The Propagation of Regional Recessions." The Review of Economics and Statistics, 2011.
+
+"Key Industries in Cleveland." City of Cleveland Economic Development, rethinkcleveland.org/Key-Industries.aspx.
+
+"Major Industries Columbus Ohio." Columbus 2020, columbusregion.com/industries/.
+
+Maverick, J.B. "New Mexico: 7 Industries for Economic Growth." Investopedia, Investopedia, 22 Oct. 2018, www.investopedia.com/articles/investing/011316/new-mexicos-economy-6-industries-driving-gdp-growth.asp.
+
+Perkins, Olivera. "Ohio Has Yet to Recover All Jobs Lost to the Great Recession and Also the One in 2001." Cleveland.com, Cleveland.com, 27 Sept. 2015, www.cleveland.com/business/index.ssf/2015/09/ohio_yet_to_recover_all_jobs_l.html.
+
+Sanchez, Jesus. "1990 1991 : Regional Report : Recession Seen as Brief and Mild in Southland : Analysts Expect Los Angeles County to Take Hardest Hit, Orange County to Suffer Less." Los Angeles Times, Los Angeles Times, 2 Jan. 1991, articles.latimes.com/1991-01-02/business/fi-7008_1_los-angeles-county.
+
+"State Coincident Indexes - a Monthly Coincident Index for Each of the 50 States." Philadelphia Federal Reserve, www.philadelphiafed.org/research-and-data/regional-economy/indexes/coincident/.
+
+<br>
+
+#### Appendix 1: MSA Recession Tables
+
+```{r echo=FALSE}
+ msa_appendix_table(1) %>%
+  scroll_box(height = "540px")
+ 
+```
+
+<br>
+
+#### Appendix 2: State Recession Tables
+
+```{r echo=FALSE}
+state_appendix_table(1) %>%
+  scroll_box(height = "540px")
+
+```
+
+<br>
+
+
+
+
+
+
+
+
+
