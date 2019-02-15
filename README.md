@@ -1,1 +1,3 @@
 # Kautz-Project
+
+This sample project uses the latent variables found in the Philadelphia and St. Louis Federal Reserves' dynamic factor Markov-Switching models in conjunction with a non-parametric algorithm modelled off the one suggested by Arias et al. in Metro Business Cycles (2016). This allows business cycle dating on the state and metropolitan statistical area level to be conducted. States and MSAs are then analyzed, visualized, and clustered prior to attempts to use this expanded dataset to predict recessions. This prediction is done at the State and MSA level for now-casting, three month forecasting, and six month forecasting using gradient boosting.
