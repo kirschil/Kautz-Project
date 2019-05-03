@@ -1,0 +1,324 @@
+---
+title: "XGBOOST Deeper Dive: MSA"
+author: "Iain Kirsch"
+date: "April 11, 2019"
+output: html_document
+runtime: shiny
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(Hmisc)
+library(tidyverse)
+library(zoo)
+library(shiny)
+library(shinydashboard)
+library(rsconnect)
+library(kableExtra)
+library(leaflet)
+library(sf)
+library(xgboost)
+library(Matrix)
+library(caret)
+library(plotly)
+library(scales)
+library(xgboostExplainer)
+
+```
+
+
+```{r echo=FALSE, include=FALSE} 
+
+load("msaboostdata2.RData")
+n<- 10721
+corrplotoptions<- c("Nowcast", "Three Month Forecast", "Six Month Forecast")
+
+afteradd3<- msaboostdata[1:2]
+msaboostdata<- msaboostdata[c(-1,-2,-3)]
+train.label.now <- msaboostdata$MSA_Recession[1:n]
+train.label.three <- msaboostdata$Threemonthsout[1:n]
+train.label.six <- msaboostdata$Sixmonthsout[1:n]
+
+test.label.now <- msaboostdata$MSA_Recession[(n+1):length(msaboostdata$MSA_Coincident)]
+test.label.three <- msaboostdata$Threemonthsout[(n+1):length(msaboostdata$MSA_Coincident)]
+test.label.six <- msaboostdata$Sixmonthsout[(n+1):length(msaboostdata$MSA_Coincident)]
+
+
+
+f4<- msaboostdata[c(1:36)]
+f4 <- f4[c(-2,-3)]
+
+traindata<- as.matrix(f4[1:n,])
+testdata<- as.matrix(f4[(n+1):length(msaboostdata$MSA_Recession),])
+
+dtrain.now <- xgb.DMatrix(data = traindata, label = train.label.now)
+dtrain.three <- xgb.DMatrix(data = traindata, label = train.label.three)
+dtrain.six <- xgb.DMatrix(data = traindata, label = train.label.six)
+
+
+model.now <- xgboost(data = dtrain.now, max.depth = 6, eta = 0.3, nthread = 2, nrounds = 7, objective = "binary:logistic")
+
+model.three <- xgboost(data = dtrain.three, max.depth = 6, eta = 0.3, nthread = 2, nrounds = 7, objective = "binary:logistic")
+
+model.six <- xgboost(data = dtrain.six, max.depth = 7, eta = 0.3, nthread = 2, nrounds = 7, objective = "binary:logistic")
+
+pred.now.test<- as.data.frame(predict(model.now, testdata))
+pred.now.train<- as.data.frame(predict(model.now, traindata))
+
+pred.three.test<- as.data.frame(predict(model.three, testdata))
+pred.three.train<- as.data.frame(predict(model.three, traindata))
+
+pred.six.test<- as.data.frame(predict(model.six, testdata))
+pred.six.train<- as.data.frame(predict(model.six, traindata))
+
+names(pred.now.test)<- "Probability"
+names(pred.now.train)<- "Probability"
+predictions.now<- rbind(pred.now.train, pred.now.test)
+
+names(pred.three.test)<- "Probability"
+names(pred.three.train)<- "Probability"
+predictions.three<- rbind(pred.three.train, pred.three.test)
+
+names(pred.six.test)<- "Probability"
+names(pred.six.train)<- "Probability"
+predictions.six<- rbind(pred.six.train, pred.six.test)
+
+results.now.msa<- as.data.frame(cbind(afteradd3, predictions.now, msaboostdata$MSA_Recession))
+names(results.now.msa)[4]<- "Actual"
+results.now.msa$Date<- as.yearmon(results.now.msa$Date, format="%b %Y")
+
+results.three.msa<- as.data.frame(cbind(afteradd3, predictions.three, msaboostdata$Threemonthsout))
+names(results.three.msa)[4]<- "Actual"
+results.three.msa$Date<- as.yearmon(results.three.msa$Date, format="%b %Y")
+
+results.six.msa<- as.data.frame(cbind(afteradd3, predictions.six, msaboostdata$Sixmonthsout))
+names(results.six.msa)[4]<- "Actual"
+results.six.msa$Date<- as.yearmon(results.six.msa$Date, format="%b %Y")
+
+f42<- function(x, y){
+ if(y=="Nowcast"){
+   z<- results.now.msa
+ } else if(y=="Three Month Forecast"){
+   z<- results.three.msa
+ } else if(y=="Six Month Forecast"){
+   z<- results.six.msa
+ }
+  resultsx22<- z %>% 
+    filter(MSA==x)
+  
+  resultsx23<- resultsx22 %>% 
+    mutate(Actual=(round(Actual,2))) %>% 
+    mutate(Probability=(round(Probability,2)))
+  
+  
+  plotA<- ggplot(resultsx23, aes(x=Date)) + 
+    geom_line(aes(y = Actual, colour = "Actual")) + 
+    geom_line(aes(y = Probability, colour = "Prediction"))+
+    scale_colour_manual(values=c("darkorange3", "deepskyblue"))+
+    xlab("Date")+ ylab("Recession Likelihood")+ labs(colour="")+ ggtitle("")+
+    scale_y_continuous(labels = scales::percent) + theme(legend.position="none")
+  
+  ggplotly(plotA, tooltip = c("x", "y")) %>%
+    config(displayModeBar = F)
+}
+
+xgbpred <- ifelse (pred.now.test > 0.29,1,0)
+xgbpred<- as.factor(as.vector(xgbpred))
+test.label2<- as.factor(test.label.now)
+msa.now.matrix <- confusionMatrix(xgbpred, test.label2)
+
+msa.now.conf <- c(msa.now.matrix$table[2,1], msa.now.matrix$table[1,1], 
+               msa.now.matrix$table[2,2], msa.now.matrix$table[1,2])
+
+xgbpred <- ifelse (pred.three.test > 0.25,1,0)
+xgbpred<- as.factor(as.vector(xgbpred))
+test.label2<- as.factor(test.label.three)
+msa.three.matrix <- confusionMatrix(xgbpred, test.label2)
+
+msa.three.conf <- c(msa.three.matrix$table[2,1], msa.three.matrix$table[1,1], 
+                    msa.three.matrix$table[2,2], msa.three.matrix$table[1,2])
+
+xgbpred <- ifelse (pred.six.test > 0.25,1,0)
+xgbpred<- as.factor(as.vector(xgbpred))
+test.label2<- as.factor(test.label.six)
+msa.six.matrix <- confusionMatrix(xgbpred, test.label2)
+
+msa.six.conf <- c(msa.six.matrix$table[2,1], msa.six.matrix$table[1,1], 
+                    msa.six.matrix$table[2,2], msa.six.matrix$table[1,2])
+
+
+
+msacorrplots<- function(x){
+  ActualValue <- factor(c(0, 0, 1, 1))
+  PredictedValue <- factor(c(1, 0, 1, 0))
+  
+  
+  if(x=="Nowcast"){
+    Yz <- msa.now.conf
+  } else if(x=="Three Month Forecast"){
+    Yz <- msa.three.conf
+  } else {
+    Yz <- msa.six.conf
+  }
+  
+  dfx <- data.frame(ActualValue, PredictedValue, Yz)
+  
+  ggplot(data =  dfx, mapping = aes(x = ActualValue, y = PredictedValue)) +
+    geom_tile(aes(fill = Yz), colour = "white") +
+    geom_text(aes(label = sprintf("%1.0f", Yz)), vjust = 1) +
+    scale_fill_gradient(low = "deepskyblue", high = "firebrick") +
+    theme_bw() + theme(legend.position = "none")+
+    ggtitle("MSA Confusion Matrix 2005-2018")+ ylab("Predicted Value") + xlab("Actual Value") + 
+    theme(plot.title = element_text(hjust = 0.5))
+}
+
+dtest.now <- xgb.DMatrix(data = testdata, label = test.label.now)
+dtest.three <- xgb.DMatrix(data = testdata, label = test.label.three)
+dtest.six <- xgb.DMatrix(data = testdata, label = test.label.six)
+
+explainer.now = buildExplainer(model.now, dtrain.now, type="binary", base_score = 0.5, trees_idx = NULL)
+pred.breakdown.now = explainPredictions(model.now, explainer.now, dtest.now)
+
+explainer.three = buildExplainer(model.three, dtrain.three, type="binary", base_score = 0.5, trees_idx = NULL)
+pred.breakdown.three = explainPredictions(model.three, explainer.three, dtest.three)
+
+explainer.six = buildExplainer(model.six, dtrain.six, type="binary", base_score = 0.5, trees_idx = NULL)
+pred.breakdown.six = explainPredictions(model.six, explainer.six, dtest.six)
+###
+datelist<- as.data.frame(unique(results.now.msa$Date))
+names(datelist) <- "Date"
+
+datelist <- datelist %>% 
+  filter(Date>= as.yearmon("Jan 2005", format="%b %Y"))
+
+fwater<- function(x, y, z){
+  
+  if(z=="Nowcast"){
+    explainer <- explainer.now
+    pred.breakdown <- pred.breakdown.now
+    model <- model.now
+  } else if(z=="Three Month Forecast"){
+    explainer <- explainer.three
+    pred.breakdown <- pred.breakdown.three
+    model <- model.three
+  } else if(z=="Six Month Forecast"){
+    explainer <- explainer.now
+    pred.breakdown <- pred.breakdown.now
+    model <- model.six
+  }
+  
+  results<- results.now.msa %>% 
+    mutate(ID = 1:length(results.now.msa$MSA)) %>% 
+    filter(MSA==x) %>% 
+    filter(Date==y)
+  n <- results$ID[1]
+
+  
+  showWaterfall(model, explainer, dtest.now, as.matrix(testdata), idx = n-10721)
+
+}
+```
+
+<br>
+
+```{r echo=FALSE}
+
+ui <- dashboardPage(skin = "blue",
+                    dashboardHeader(title= "Fig. 1: MSA Forecasting and Nowcasting", titleWidth = 400),
+                    dashboardSidebar(disable=TRUE),
+                    dashboardBody(
+                      fillPage(padding = 0,
+           box(title="", id="normal", solidHeader = TRUE, status = "primary", width=7, 
+                    plotlyOutput("plot1", height = 250)), 
+            box(title="MSA to Examine", background = "black", width=5, 
+                    selectInput("variable", "MSA:", choices= sort(unique(afteradd3$MSA)), selected="Cincinnati")),
+           box(title="Forecast Length", background = "black", width=5, 
+                    selectInput("variable.two", "Forecast:", choices= c("Nowcast", "Three Month Forecast",
+                                                                 "Six Month Forecast"), selected="Nowcast"))
+            )))
+
+
+server <- function(input, output) {
+  
+   
+    output$plot1<- renderPlotly({
+    par(mfrow=c(1,1))
+    par(mar = c(4, 5, 4, 4)) 
+    f42(input$variable, input$variable.two)})
+
+
+   }
+
+
+shinyApp(ui=ui, server=server)
+
+```
+*Data from the Federal Reserve Bank of Philadelphia, Federal Reserve Bank of St. Louis, Bureau of Labor Statistics, United States Census Bureau, and author's calculations.*
+
+<br>
+
+```{r echo=FALSE}
+
+ui <- dashboardPage(skin = "blue",
+                    dashboardHeader(title= "Fig. 2: MSA Confusion Matrices", titleWidth = 350),
+                    dashboardSidebar(disable=TRUE),
+                    dashboardBody(
+                      fillPage(padding = 0,
+           box(title="", id="normal", solidHeader = TRUE, status = "primary", width=7,
+                    plotOutput("plot1", height = 250)), 
+            
+            box(title="Explore Model Performance", background = "black", height = 125, width=5, 
+                    selectInput("variable", "Model:", choices= corrplotoptions, selected="Nowcast"))
+            )))
+
+
+server <- function(input, output) {
+   
+    output$plot1<- renderPlot({
+    msacorrplots(input$variable)
+      })
+    
+
+   }
+
+
+shinyApp(ui=ui, server=server)
+
+```
+
+<br>
+
+```{r echo=FALSE}
+
+ui <- dashboardPage(skin = "blue",
+                    dashboardHeader(title= "Fig. 3: XGBOOST Prediction Analysis", titleWidth = 400),
+                    dashboardSidebar(disable=TRUE),
+                    dashboardBody(
+                      fluidRow(
+           box(title="", id="normal", solidHeader = TRUE, status = "primary", width=7, 
+                    plotOutput("plot1", height = 400)), 
+            box(title="MSA to Examine", background = "black", width=5, 
+                    selectInput("variable", "MSA:", choices= sort(unique(afteradd3$MSA)), selected="Cincinnati")),
+           box(title="Date", background = "black", width=5, 
+                    selectInput("variable.two", "Date:", choices= c(unique(datelist$Date)), selected=datelist$Date[length(datelist$Date)])),
+           box(title="Forecast Length", background = "black", width=5, 
+                    selectInput("variable.three", "Forecast:", choices= c("Nowcast", "Three Month Forecast", "Six Month Forecast"), selected="Nowcast"))
+            )))
+
+
+server <- function(input, output) {
+  
+   
+    output$plot1<- renderPlot({
+      fwater(input$variable, input$variable.two, input$variable.three)
+    
+
+
+   })
+}
+
+shinyApp(ui=ui, server=server)
+
+```
+<br>
+<br>

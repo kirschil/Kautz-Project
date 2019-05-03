@@ -1,0 +1,322 @@
+---
+title: "XGBOOST Deeper Dive: State"
+author: "Iain Kirsch"
+date: "April 11, 2019"
+output: html_document
+runtime: shiny
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(Hmisc)
+library(tidyverse)
+library(zoo)
+library(shiny)
+library(shinydashboard)
+library(rsconnect)
+library(kableExtra)
+library(leaflet)
+library(sf)
+library(xgboost)
+library(Matrix)
+library(caret)
+library(plotly)
+library(scales)
+library(xgboostExplainer)
+
+```
+
+
+```{r echo=FALSE, include=FALSE}
+load("statesdata.RData")
+
+n<- 9450
+corrplotoptions<- c("Nowcast", "Three Month Forecast", "Six Month Forecast")
+
+afteradd2<- statesdata[1:2]
+statesdata<- statesdata[c(-1,-2)]
+train.label.now <- statesdata$Recession[1:n]
+train.label.three <- statesdata$Three_Months_Out[1:n]
+train.label.six <- statesdata$Six_Months_Out[1:n]
+
+test.label.now <- statesdata$Recession[(n+1):length(statesdata$Coincident)]
+test.label.three <- statesdata$Three_Months_Out[(n+1):length(statesdata$Coincident)]
+test.label.six <- statesdata$Six_Months_Out[(n+1):length(statesdata$Coincident)]
+
+
+
+f4<- statesdata[c(3:12, 14:18, 20:21, 26, 31, 36:38, 41:43)]
+
+traindata<- as.matrix(f4[1:n,])
+testdata<- as.matrix(f4[(n+1):length(statesdata$Employed_Workforce),])
+
+dtrain.now <- xgb.DMatrix(data = traindata, label = train.label.now)
+dtrain.three <- xgb.DMatrix(data = traindata, label = train.label.three)
+dtrain.six <- xgb.DMatrix(data = traindata, label = train.label.six)
+
+
+model.now <- xgboost(data = dtrain.now, max.depth = 6, eta = .3, nthread = 2, nrounds = 6, objective = "binary:logistic")
+
+model.three <- xgboost(data = dtrain.three, max.depth = 6, eta = .3, nthread = 2, nrounds = 6, objective = "binary:logistic")
+
+model.six <- xgboost(data = dtrain.six, max.depth = 6, eta = .3, nthread = 2, nrounds = 6, objective = "binary:logistic")
+
+pred.now.test<- as.data.frame(predict(model.now, testdata))
+pred.now.train<- as.data.frame(predict(model.now, traindata))
+
+pred.three.test<- as.data.frame(predict(model.three, testdata))
+pred.three.train<- as.data.frame(predict(model.three, traindata))
+
+pred.six.test<- as.data.frame(predict(model.six, testdata))
+pred.six.train<- as.data.frame(predict(model.six, traindata))
+
+names(pred.now.test)<- "Probability"
+names(pred.now.train)<- "Probability"
+predictions.now<- rbind(pred.now.train, pred.now.test)
+
+names(pred.three.test)<- "Probability"
+names(pred.three.train)<- "Probability"
+predictions.three<- rbind(pred.three.train, pred.three.test)
+
+names(pred.six.test)<- "Probability"
+names(pred.six.train)<- "Probability"
+predictions.six<- rbind(pred.six.train, pred.six.test)
+
+results.now<- as.data.frame(cbind(afteradd2, predictions.now, statesdata$Recession))
+names(results.now)[4]<- "Actual"
+results.now$Date<- as.yearmon(results.now$Date, format="%b %Y")
+
+results.three<- as.data.frame(cbind(afteradd2, predictions.three, statesdata$Three_Months_Out))
+names(results.three)[4]<- "Actual"
+results.three$Date<- as.yearmon(results.three$Date, format="%b %Y")
+
+results.six<- as.data.frame(cbind(afteradd2, predictions.six, statesdata$Six_Months_Out))
+names(results.six)[4]<- "Actual"
+results.six$Date<- as.yearmon(results.six$Date, format="%b %Y")
+
+fstate<- function(x, y){
+ if(y=="Nowcast"){
+   z<- results.now
+ } else if(y=="Three Month Forecast"){
+   z<- results.three
+ } else if(y=="Six Month Forecast"){
+   z<- results.six
+ }
+  resultsx22<- z %>% 
+    filter(State==x)
+  
+  resultsx23<- resultsx22 %>% 
+    mutate(Actual=(round(Actual,2))) %>% 
+    mutate(Probability=(round(Probability,2)))
+  
+  
+  plotA<- ggplot(resultsx23, aes(x=Date)) + 
+    geom_line(aes(y = Actual, colour = "Actual")) + 
+    geom_line(aes(y = Probability, colour = "Prediction"))+
+    scale_colour_manual(values=c("darkorange3", "deepskyblue"))+
+    xlab("Date")+ ylab("Recession Likelihood")+ labs(colour="")+ ggtitle("")+
+    scale_y_continuous(labels = scales::percent) + theme(legend.position="none")
+  
+  ggplotly(plotA, tooltip = c("x", "y")) %>%
+    config(displayModeBar = F)
+}
+
+xgbpred <- ifelse (pred.now.test > 0.3,1,0)
+xgbpred<- as.factor(as.vector(xgbpred))
+test.label2<- as.factor(test.label.now)
+state.now.matrix <- confusionMatrix(xgbpred, test.label2)
+
+state.now.conf <- c(state.now.matrix$table[2,1], state.now.matrix$table[1,1], 
+               state.now.matrix$table[2,2], state.now.matrix$table[1,2])
+
+xgbpred <- ifelse (pred.three.test > 0.36,1,0)
+xgbpred<- as.factor(as.vector(xgbpred))
+test.label2<- as.factor(test.label.three)
+state.three.matrix <- confusionMatrix(xgbpred, test.label2)
+
+state.three.conf <- c(state.three.matrix$table[2,1], state.three.matrix$table[1,1], 
+                    state.three.matrix$table[2,2], state.three.matrix$table[1,2])
+
+xgbpred <- ifelse (pred.six.test > 0.33,1,0)
+xgbpred<- as.factor(as.vector(xgbpred))
+test.label2<- as.factor(test.label.six)
+state.six.matrix <- confusionMatrix(xgbpred, test.label2)
+
+state.six.conf <- c(state.six.matrix$table[2,1], state.six.matrix$table[1,1], 
+                    state.six.matrix$table[2,2], state.six.matrix$table[1,2])
+
+statecorrplots<- function(x){
+  ActualValue <- factor(c(0, 0, 1, 1))
+  PredictedValue <- factor(c(1, 0, 1, 0))
+  
+  
+  if(x=="Nowcast"){
+    Yz <- state.now.conf
+  } else if(x=="Three Month Forecast"){
+    Yz <- state.three.conf
+  } else {
+    Yz <- state.six.conf
+  }
+  
+  dfx <- data.frame(ActualValue, PredictedValue, Yz)
+  
+  ggplot(data =  dfx, mapping = aes(x = ActualValue, y = PredictedValue)) +
+    geom_tile(aes(fill = Yz), colour = "white") +
+    geom_text(aes(label = sprintf("%1.0f", Yz)), vjust = 1) +
+    scale_fill_gradient(low = "deepskyblue", high = "firebrick") +
+    theme_bw() + theme(legend.position = "none")+
+    ggtitle("State Confusion Matrix 2006-2018")+ ylab("Predicted Value") + xlab("Actual Value") + 
+    theme(plot.title = element_text(hjust = 0.5))
+}
+
+dtest.now <- xgb.DMatrix(data = testdata, label = test.label.now)
+dtest.three <- xgb.DMatrix(data = testdata, label = test.label.three)
+dtest.six <- xgb.DMatrix(data = testdata, label = test.label.six)
+
+explainer.now = buildExplainer(model.now, dtrain.now, type="binary", base_score = 0.5, trees_idx = NULL)
+pred.breakdown.now = explainPredictions(model.now, explainer.now, dtest.now)
+
+explainer.three = buildExplainer(model.three, dtrain.three, type="binary", base_score = 0.5, trees_idx = NULL)
+pred.breakdown.three = explainPredictions(model.three, explainer.three, dtest.three)
+
+explainer.six = buildExplainer(model.six, dtrain.six, type="binary", base_score = 0.5, trees_idx = NULL)
+pred.breakdown.six = explainPredictions(model.six, explainer.six, dtest.six)
+###
+datelist<- as.data.frame(unique(results.now$Date))
+names(datelist) <- "Date"
+
+datelist <- datelist %>% 
+  filter(Date>= as.yearmon("Jan 2006", format="%b %Y"))
+
+fwater<- function(x, y, z){
+  
+  if(z=="Nowcast"){
+    explainer <- explainer.now
+    pred.breakdown <- pred.breakdown.now
+    model <- model.now
+  } else if(z=="Three Month Forecast"){
+    explainer <- explainer.three
+    pred.breakdown <- pred.breakdown.three
+    model <- model.three
+  } else if(z=="Six Month Forecast"){
+    explainer <- explainer.now
+    pred.breakdown <- pred.breakdown.now
+    model <- model.six
+  }
+  
+  results<- results.now %>% 
+    mutate(ID = 1:length(results.now$State)) %>% 
+    filter(State==x) %>% 
+    filter(Date==y)
+  n <- results$ID[1]
+
+  
+  showWaterfall(model, explainer, dtest.now, as.matrix(testdata), idx = n-9450)
+
+}
+
+```
+
+<br>
+
+```{r echo=FALSE}
+
+ui <- dashboardPage(skin = "blue",
+                    dashboardHeader(title= "Fig. 1: State Forecasting and Nowcasting", titleWidth = 450),
+                    dashboardSidebar(disable=TRUE),
+                    dashboardBody(
+                      fillPage(padding = 0,
+           box(title="", id="normal", solidHeader = TRUE, status = "primary", width=7,
+                    plotlyOutput("plot1", height = 250)), 
+            box(title="State to Examine", background = "black", width=5, 
+                    selectInput("variable", "State:", choices= sort(unique(afteradd2$State)), selected="Ohio")),
+           box(title="Forecast Length", background = "black", width=5, 
+                    selectInput("variable.two", "Forecast:", choices= c("Nowcast", "Three Month Forecast",
+                                                                 "Six Month Forecast"), selected="Nowcast"))
+            )))
+
+
+server <- function(input, output) {
+  
+   
+    output$plot1<- renderPlotly({
+    par(mfrow=c(1,1))
+    par(mar = c(4, 5, 4, 4)) 
+    fstate(input$variable, input$variable.two)})
+
+
+   }
+
+
+shinyApp(ui=ui, server=server)
+
+```
+*Data from the Federal Reserve Bank of Philadelphia, Federal Reserve Bank of St. Louis, Bureau of Labor Statistics, United States Census Bureau, and author's calculations.*
+
+<br>
+
+
+```{r echo=FALSE}
+ui <- dashboardPage(skin = "blue",
+                    dashboardHeader(title= "Fig. 2: State Confusion Matrices", titleWidth = 350),
+                    dashboardSidebar(disable=TRUE),
+                    dashboardBody(
+                      fillPage(padding = 0,
+           box(title="", id="normal", solidHeader = TRUE, status = "primary", width=7,
+                    plotOutput("plot1", height = 250)), 
+            
+            box(title="Explore Model Performance", background = "black", height = 125, width=5, 
+                    selectInput("variable", "Model:", choices= corrplotoptions, selected="Nowcast"))
+            )))
+
+
+server <- function(input, output) {
+   
+    output$plot1<- renderPlot({
+    statecorrplots(input$variable)
+      })
+    
+
+   }
+
+
+shinyApp(ui=ui, server=server)
+
+```
+
+<br>
+
+```{r echo=FALSE}
+
+ui <- dashboardPage(skin = "blue",
+                    dashboardHeader(title= "Fig. 3: XGBOOST Prediction Analysis", titleWidth = 400),
+                    dashboardSidebar(disable=TRUE),
+                    dashboardBody(
+                      fluidRow(
+           box(title="", id="normal", solidHeader = TRUE, status = "primary", width=7, 
+                    plotOutput("plot1", height = 400)), 
+            box(title="State to Examine", background = "black", width=5, 
+                    selectInput("variable", "State:", choices= sort(unique(afteradd2$State)), selected="Ohio")),
+           box(title="Date", background = "black", width=5, 
+                    selectInput("variable.two", "Date:", choices= c(unique(datelist$Date)), selected=datelist$Date[length(datelist$Date)])),
+           box(title="Forecast Length", background = "black", width=5, 
+                    selectInput("variable.three", "Forecast:", choices= c("Nowcast", "Three Month Forecast", "Six Month Forecast"), selected="Nowcast"))
+            )))
+
+
+server <- function(input, output) {
+  
+   
+    output$plot1<- renderPlot({
+      fwater(input$variable, input$variable.two, input$variable.three)
+    
+
+
+   })
+}
+
+shinyApp(ui=ui, server=server)
+
+```
+<br>
+<br>
